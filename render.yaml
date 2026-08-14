@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: orbitiq
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: ORBITIQ_ADMIN_KEY
+        generateValue: true

@@ -1,0 +1,22 @@
+{
+  "name": "orbitiq",
+  "version": "1.0.0",
+  "description": "OrbitIQ — Space Traffic Intelligence Platform. Live satellite tracking, launch intelligence, conjunction screening, and organization-scoped fleet views.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "compression": "^1.7.4",
+    "express": "^4.19.2",
+    "satellite.js": "^7.1.0",
+    "three": "^0.185.1",
+    "ws": "^8.21.3"
+  },
+  "license": "MIT"
+}
