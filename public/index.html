@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OrbitIQ — Space Traffic Intelligence</title>
+<meta name="description" content="Live satellite tracking, conjunction screening, launch intelligence and space traffic analytics.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='7' fill='%230a5aa0'/><circle cx='16' cy='16' r='13' fill='none' stroke='%2338bdf8' stroke-width='1.6'/><circle cx='27' cy='10' r='2.4' fill='%2322d3ee'/></svg>">
+<link rel="stylesheet" href="/css/style.css">
+<script type="importmap">
+{ "imports": { "three": "/vendor/three/three.module.js", "satellite.js": "/vendor/satellite/index.js" } }
+</script>
+</head>
+<body>
+
+<!-- splash -->
+<div id="splash">
+  <div class="splash-mark">
+    <div class="orbit"></div><div class="dot"></div>
+  </div>
+  <h1>OrbitIQ <em>— Space traffic intelligence</em></h1>
+  <div class="progress"><b id="splash-bar"></b></div>
+  <div id="splash-status">Starting render engine…</div>
+</div>
+
+<canvas id="globe"></canvas>
+
+<!-- top chrome -->
+<div class="hud" id="topbar">
+  <div id="logo">Orbit<em>IQ</em></div>
+  <div class="live-chip"><span class="live-dot"></span><span id="livecount">Acquiring catalog…</span></div>
+  <div style="flex:1"></div>
+  <nav class="tabs">
+    <button class="tab active" data-view="ops">Operations</button>
+    <button class="tab" data-view="analytics">Analytics</button>
+    <button class="tab" data-view="traffic">Traffic</button>
+    <button class="tab" data-view="tools">Tools</button>
+    <button class="tab" data-view="catalog">Catalog</button>
+  </nav>
+  <div style="flex:1"></div>
+  <button id="palette-btn" style="width:auto;padding:6px 11px" title="Command palette (Ctrl+K)">⌘K</button>
+  <a href="/docs.html" target="_blank" style="text-decoration:none"><button style="width:auto;padding:6px 11px" title="API documentation">API</button></a>
+  <select id="speed" style="width:118px">
+    <option value="1">1× real-time</option>
+    <option value="60">60×</option>
+    <option value="600">600×</option>
+    <option value="3600">3600×</option>
+  </select>
+  <div id="clock"><b>—</b><br><span id="clock-date">—</span></div>
+</div>
+
+<!-- sidebar -->
+<div class="hud" id="sidebar">
+  <div class="panel" id="ws-panel">
+    <h3>Workspace <span class="right" id="ws-status">Not connected</span></h3>
+    <div id="ws-disconnected">
+      <div class="row"><input id="ws-name" placeholder="Workspace name, e.g. ACME Space Ops"></div>
+      <div class="row"><select id="ws-org"><option value="">No org binding — global</option></select></div>
+      <div class="row"><button class="primary" id="ws-create">Create workspace</button></div>
+      <div class="row"><input id="ws-key-input" placeholder="…or paste an existing API key"><button id="ws-connect" style="width:104px">Connect</button></div>
+    </div>
+    <div id="ws-connected" style="display:none">
+      <div class="item go" style="margin-bottom:8px"><b id="ws-title">—</b><div class="sub" id="ws-sub">—</div></div>
+      <div class="row"><input id="ws-webhook" placeholder="Webhook URL for alerts (optional)"><button id="ws-webhook-save" style="width:76px">Save</button></div>
+      <div class="row">
+        <button class="primary" id="ws-scan">Scan now</button>
+        <button id="ws-copy" style="width:104px">Copy key</button>
+        <button id="ws-logout" style="width:104px">Sign out</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="admin-panel" style="display:none">
+    <h3>Admin console <span class="right" id="admin-meta"></span></h3>
+    <div class="row" style="margin-bottom:8px">
+      <input id="admin-msg" placeholder="Broadcast a notice to all connected users">
+      <button id="admin-send" style="width:76px">Send</button>
+    </div>
+    <div class="row" style="margin-bottom:8px"><button id="admin-scanall" style="font-size:11.5px">Run scans for all workspaces</button></div>
+    <div class="list" id="admin-wslist" style="max-height:240px"><div class="skeleton"></div></div>
+  </div>
+
+  <div class="panel" id="alerts-panel" style="display:none">
+    <h3>Alert inbox <span class="right"><span id="alert-badge" class="badge-n">0</span></h3>
+    <div class="row" style="margin-bottom:8px">
+      <button id="alerts-notify" style="font-size:11.5px">Enable notifications</button>
+      <button id="alerts-read" style="font-size:11.5px;width:104px">Mark read</button>
+    </div>
+    <div class="list" id="alertlist" style="max-height:220px"><div class="item"><span class="sub">No alerts yet — run a scan.</span></div></div>
+  </div>
+
+  <div class="panel">
+    <h3>Organization pairing <span class="right" id="org-count"></span></h3>
+    <div class="row"><select id="orgsel"><option value="all">All operators — global picture</option></select></div>
+    <div class="row"><input id="search" placeholder="Search satellite or NORAD ID"></div>
+    <div class="row">
+      <select id="regime">
+        <option value="all">All regimes</option>
+        <option value="leo">LEO</option>
+        <option value="meo">MEO</option>
+        <option value="geo">GEO / HEO</option>
+      </select>
+      <select id="typefilter">
+        <option value="all">All object types</option>
+        <option value="PAYLOAD">Payloads</option>
+        <option value="DEBRIS">Debris</option>
+        <option value="ROCKET BODY">Rocket bodies</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Catalog overview</h3>
+    <div class="stat-grid">
+      <div class="stat"><div class="v" id="s-total">—</div><div class="l">Tracked</div></div>
+      <div class="stat"><div class="v" id="s-leo">—</div><div class="l">LEO</div></div>
+      <div class="stat"><div class="v" id="s-geo">—</div><div class="l">MEO / GEO</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Conjunction screening <span class="right" id="conj-meta"></span></h3>
+    <div class="row">
+      <select id="conj-hours">
+        <option value="1">1h window</option>
+        <option value="3" selected>3h window</option>
+        <option value="6">6h window</option>
+      </select>
+      <select id="conj-th">
+        <option value="5">&lt; 5 km</option>
+        <option value="10" selected>&lt; 10 km</option>
+        <option value="20">&lt; 20 km</option>
+      </select>
+    </div>
+    <div class="row"><button class="primary" id="runconj">Run screening</button></div>
+    <div class="list" id="conjlist" style="margin-top:10px;max-height:230px">
+      <div class="item"><span class="sub">No screening run yet. Pair an organization and run a scan.</span></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Launch intelligence</h3>
+    <div class="list" id="launchlist" style="max-height:240px"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>
+  </div>
+
+  <div class="panel">
+    <h3>Recent deployments</h3>
+    <div class="list" id="recentlist" style="max-height:200px"><div class="skeleton"></div><div class="skeleton"></div></div>
+  </div>
+
+  <div class="panel">
+    <h3>Maneuver detection <span class="right">Element deltas</span></h3>
+    <div class="list" id="maneuverlist" style="max-height:200px"><div class="skeleton"></div><div class="skeleton"></div></div>
+  </div>
+
+  <div class="panel">
+    <h3>Re-entry &amp; decay watch</h3>
+    <div class="list" id="decaylist" style="max-height:200px"><div class="skeleton"></div><div class="skeleton"></div></div>
+  </div>
+
+  <div class="panel">
+    <h3>Watchlist <span class="right">Starred objects</span></h3>
+    <div class="list" id="watchlist" style="max-height:170px"><div class="item"><span class="sub">Click a satellite, then ★ to track it here.</span></div></div>
+  </div>
+</div>
+
+<!-- detail drawer -->
+<div id="drawer">
+  <span class="star" id="drawer-star" title="Add to watchlist">★</span>
+  <span class="close-x" id="drawer-close">✕</span>
+  <h2 id="drawer-title">—</h2>
+  <div id="drawer-body"></div>
+  <div class="drawer-section">Ground track — one orbit</div>
+  <canvas id="groundtrack" width="640" height="320"></canvas>
+  <div class="drawer-section">Pass predictor</div>
+  <div class="row">
+    <input id="obs-lat" placeholder="Latitude °" style="flex:1">
+    <input id="obs-lon" placeholder="Longitude °" style="flex:1">
+    <button id="obs-geo" title="Use my location" style="width:44px">◎</button>
+  </div>
+  <div class="row"><button class="primary" id="run-passes">Predict passes · 48 h</button></div>
+  <div class="list" id="passlist"></div>
+</div>
+
+<!-- analytics view -->
+<div class="view" id="view-analytics">
+  <div class="view-inner">
+    <h2 class="viewtitle">Orbital Environment Analytics</h2>
+    <div class="viewsub">Population statistics computed live from the tracked catalog.</div>
+    <div class="grid-4" id="ana-cards"></div>
+    <div class="grid-2">
+      <div class="card"><h4>Objects by Altitude (LEO–3000 km)</h4><canvas id="ch-alt" height="220"></canvas></div>
+      <div class="card"><h4>Top Operators</h4><canvas id="ch-org" height="220"></canvas></div>
+      <div class="card"><h4>Objects by Launch Year</h4><canvas id="ch-year" height="220"></canvas></div>
+      <div class="card"><h4>Inclination Distribution</h4><canvas id="ch-incl" height="220"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<!-- catalog view -->
+<div class="view" id="view-catalog">
+  <div class="view-inner">
+    <h2 class="viewtitle">Object Catalog</h2>
+    <div class="viewsub">Full tracked population. Click a row to fly to the object.</div>
+    <div class="card" style="padding:12px 14px;margin-bottom:12px">
+      <input id="cat-search" placeholder="⌕  Filter by name, NORAD ID, operator…">
+    </div>
+    <div class="card" style="padding:0;max-height:62vh;overflow:auto">
+      <table id="cat-table">
+        <thead><tr>
+          <th data-k="name">Name</th><th data-k="id">NORAD</th><th data-k="orgName">Operator</th>
+          <th data-k="incl">Incl °</th><th data-k="alt">Alt km</th><th data-k="period">Period min</th>
+        </tr></thead>
+        <tbody id="cat-body"></tbody>
+      </table>
+    </div>
+    <div style="text-align:center;margin-top:12px"><button id="cat-more" style="width:200px">Load more</button></div>
+  </div>
+</div>
+
+<!-- traffic view -->
+<div class="view" id="view-traffic">
+  <div class="view-inner">
+    <h2 class="viewtitle">Orbital Traffic &amp; Congestion</h2>
+    <div class="viewsub">Shell-by-shell occupancy of low Earth orbit, 25 km bins. The core of space traffic management.</div>
+    <div class="grid-4" id="traffic-cards"></div>
+    <div class="card">
+      <h4>LEO Shell Occupancy — 200 to 2000 km</h4>
+      <div id="shell-strip"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h4>Most Occupied Shells</h4>
+      <table id="shell-table" class="kv-table">
+        <thead><tr><th>Altitude shell</th><th>Objects</th><th>Dominant operator</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- tools view -->
+<div class="view" id="view-tools">
+  <div class="view-inner">
+    <h2 class="viewtitle">Mission Design Tools</h2>
+    <div class="viewsub">First-order astrodynamics calculators. Estimates, not flight software.</div>
+    <div class="grid-2">
+      <div class="card">
+        <h4>Orbit transfer planner · Hohmann</h4>
+        <div class="row"><input id="tf-alt1" placeholder="Start altitude km" value="550"><input id="tf-alt2" placeholder="Target altitude km" value="35786"></div>
+        <div class="row"><input id="tf-di" placeholder="Plane change ° (optional)" value="0"><button class="primary" id="tf-run" style="width:124px">Compute</button></div>
+        <div id="tf-result" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h4>Launch site planner</h4>
+        <div class="row"><input id="lp-incl" placeholder="Target inclination °" value="53"><input id="lp-alt" placeholder="Altitude km" value="550"><button class="primary" id="lp-run" style="width:124px">Plan</button></div>
+        <div id="lp-result" style="margin-top:12px"></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <h4>Data exports</h4>
+      <div class="row">
+        <a class="dl" href="/api/export/catalog.csv" download><button>Download catalog CSV</button></a>
+        <a class="dl" id="dl-conj" href="/api/export/conjunctions.csv" download><button>Download conjunctions CSV</button></a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- command palette -->
+<div id="palette" class="palette-overlay">
+  <div class="palette-box">
+    <input id="palette-input" placeholder="Search objects, views, actions…  (Esc to close)" autocomplete="off">
+    <div id="palette-results"></div>
+  </div>
+</div>
+
+<!-- status feed -->
+<div id="ticker">
+  <div class="label"><span class="live-dot"></span> Live</div>
+  <div class="ticker-track show" id="ticker-track"><span class="tick">Syncing mission feed…</span></div>
+</div>
+
+<div id="tooltip"></div>
+<div id="toasts"></div>
+<div id="status"></div>
+
+<script type="module" src="/js/app.js"></script>
+</body>
+</html>

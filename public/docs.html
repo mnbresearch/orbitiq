@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OrbitIQ API — Documentation</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#04060c; --panel:#0b101c; --stroke:rgba(90,130,200,.18); --text:#e6edfa; --dim:#7385a3; --accent:#38bdf8; --mint:#34d399; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:"Inter",sans-serif; font-size:13.5px; line-height:1.65; }
+  .wrap { max-width:880px; margin:0 auto; padding:48px 24px 80px; }
+  h1 { font-family:"Inter",sans-serif; font-size:26px; letter-spacing:-0.015em; font-weight:650; }
+  h1 em { color:var(--accent); font-style:normal; }
+  .sub { color:var(--dim); margin:6px 0 34px; }
+  h2 { font-family:"Inter",sans-serif; font-size:13.5px; letter-spacing:-0.005em; color:var(--text); margin:38px 0 12px; font-weight:600; }
+  .ep { background:var(--panel); border:1px solid var(--stroke); border-radius:12px; padding:14px 18px; margin-bottom:10px; }
+  .m { display:inline-block; width:52px; font-weight:600; }
+  .m.get { color:var(--mint); } .m.post { color:var(--accent); } .m.put { color:#fbbf24; }
+  .path { color:#fff; }
+  .d { color:var(--dim); margin-top:4px; font-size:12px; }
+  code, pre { background:#060a15; border:1px solid var(--stroke); border-radius:8px; font-family:inherit; }
+  code { padding:1px 7px; font-size:12px; }
+  pre { padding:14px 16px; overflow-x:auto; margin:10px 0; font-size:12px; color:#a8c2e8; }
+  .auth { color:#fbbf24; font-size:11px; margin-left:8px; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Orbit<em>IQ</em> API</h1>
+  <div class="sub">REST + WebSocket API for space traffic intelligence. Base path <code>/api/v1</code> (alias <code>/api</code>). No key needed for read endpoints; workspace endpoints use <code>X-API-Key</code>.</div>
+
+  <h2>Quick start</h2>
+  <pre>curl {host}/api/v1/satellites?org=spacex&limit=5
+curl -X POST {host}/api/v1/workspaces -H "Content-Type: application/json" \
+  -d '{"name":"ACME Space Ops","org":"spacex"}'
+# → returns your apiKey (shown once)
+curl {host}/api/v1/alerts -H "X-API-Key: oiq_…"</pre>
+
+  <h2>Catalog &amp; tracking</h2>
+  <div class="ep"><span class="m get">GET</span><span class="path">/satellites</span><div class="d">Full catalog with GP orbital elements. Params: <code>org</code>, <code>q</code> (name/NORAD), <code>limit</code>.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/organizations</span><div class="d">Operators detected in the catalog, with object counts.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/stats</span><div class="d">Totals by type and orbital regime.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/recent-objects</span><div class="d">Newest payloads on orbit by international designator.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/decay-watch</span><div class="d">Lowest-perigee objects (re-entry candidates).</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/maneuvers</span><div class="d">Maneuvers detected from epoch-over-epoch element changes.</div></div>
+
+  <h2>Screening &amp; safety</h2>
+  <div class="ep"><span class="m get">GET</span><span class="path">/conjunctions</span><div class="d">Close-approach screening. Params: <code>org</code> (primaries), <code>hours</code> (≤12), <code>thresholdKm</code> (≤50). Results cached 15 min.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/passes</span><div class="d">48 h ground passes. Params: <code>satId</code>, <code>lat</code>, <code>lon</code>.</div></div>
+
+  <h2>Analytics &amp; traffic</h2>
+  <div class="ep"><span class="m get">GET</span><span class="path">/analytics</span><div class="d">Histograms (altitude, inclination), launch-year trend, per-org counts, daily population snapshots.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/traffic/congestion</span><div class="d">LEO shell occupancy in 25 km bins with load tiers and dominant operator per shell.</div></div>
+
+  <h2>Mission design</h2>
+  <div class="ep"><span class="m get">GET</span><span class="path">/tools/transfer</span><div class="d">Hohmann transfer with combined plane change. Params: <code>alt1</code>, <code>alt2</code> (km), <code>planeChange</code> (°).</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/tools/launch-plan</span><div class="d">Launch-site feasibility, azimuths, first-order Δv. Params: <code>incl</code> (°), <code>alt</code> (km).</div></div>
+
+  <h2>Workspaces (multi-tenant)</h2>
+  <div class="ep"><span class="m post">POST</span><span class="path">/workspaces</span><div class="d">Create a workspace bound to an operator. Body: <code>{name, org}</code>. Returns the API key once.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/workspace</span><span class="auth">X-API-Key</span><div class="d">Workspace profile + daily usage metering.</div></div>
+  <div class="ep"><span class="m put">PUT</span><span class="path">/workspace</span><span class="auth">X-API-Key</span><div class="d">Update <code>webhook</code>, <code>org</code>, or <code>screening {hours, thresholdKm}</code>.</div></div>
+  <div class="ep"><span class="m post">POST</span><span class="path">/workspace/scan</span><span class="auth">X-API-Key</span><div class="d">Run the workspace's conjunction scan now. New events become alerts, push over WebSocket, and POST to the webhook.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/alerts</span><span class="auth">X-API-Key</span><div class="d">Alert inbox (deduplicated conjunction events).</div></div>
+  <div class="ep"><span class="m post">POST</span><span class="path">/alerts/read</span><span class="auth">X-API-Key</span><div class="d">Mark all alerts read.</div></div>
+
+  <h2>Exports</h2>
+  <div class="ep"><span class="m get">GET</span><span class="path">/export/catalog.csv</span><div class="d">Catalog as CSV. Param: <code>org</code>.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/export/conjunctions.csv</span><div class="d">Screening results as CSV. Params as <code>/conjunctions</code>.</div></div>
+
+  <h2>WebSocket</h2>
+  <div class="ep"><span class="m get">WS</span><span class="path">/ws</span><div class="d">Live push. Messages: <code>{type:"hello"}</code> on connect, <code>{type:"alerts", payload:{workspaceId, count, top[]}}</code> when background scans find new events.</div></div>
+
+  <h2>Data honesty</h2>
+  <div class="d" style="margin-bottom:40px">Positions derive from public GP elements (km-level uncertainty). Suitable for monitoring, screening and triage — not operational collision avoidance. Sources: CelesTrak, The Space Devs. Background scans run every 30 minutes.</div>
+
+  <a href="/">← back to the platform</a>
+</div>
+</body>
+</html>
