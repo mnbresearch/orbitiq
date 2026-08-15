@@ -11,6 +11,8 @@ import * as satellite from "satellite.js";
 import { getSatellites, getLaunches, getEvents, orgList } from "./src/data.js";
 import { screenConjunctions } from "./src/conjunctions.js";
 import { hohmann, launchPlan, congestion, detectManeuvers, LAUNCH_SITES } from "./src/astro.js";
+import * as intel from "./src/intel.js";
+import * as ledger from "./src/ledger.js";
 import * as store from "./src/store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,13 +33,31 @@ api.use((req, res, next) => {
     const ws = store.findByKey(String(key));
     if (!ws) return res.status(401).json({ error: "Invalid API key" });
     req.workspace = ws;
+    const plan = store.PLANS[ws.plan] || store.PLANS.free;
+    if (ws.role !== "admin" && store.todayCalls(ws.apiKey) >= plan.dailyCalls) {
+      return res.status(429).json({ error: "Daily call limit reached", plan: ws.plan, limit: plan.dailyCalls, upgrade: "Higher tiers include larger daily quotas." });
+    }
     store.recordUsage(ws.apiKey);
   }
   next();
 });
+const requirePlan = min => (req, res, next) => {
+  const rank = req.workspace ? (store.PLANS[req.workspace.plan]?.rank ?? 0) : -1;
+  const need = store.PLANS[min].rank;
+  if (req.workspace?.role === "admin" || rank >= need) return next();
+  return res.status(402).json({
+    error: `${store.PLANS[min].label} plan required`,
+    yourPlan: req.workspace?.plan || "none",
+    plans: "/api/plans"
+  });
+};
 const requireWs = (req, res, next) => req.workspace ? next() : res.status(401).json({ error: "X-API-Key header required" });
 const requireAdmin = (req, res, next) =>
   req.workspace?.role === "admin" ? next() : res.status(403).json({ error: "Admin key required" });
+const requirePro = (req, res, next) =>
+  (req.workspace && (req.workspace.plan === "pro" || req.workspace.role === "admin"))
+    ? next()
+    : res.status(402).json({ error: "Pro plan required", detail: "This intelligence endpoint is part of the OrbitIQ Pro subscription. Create a workspace and contact the operator to upgrade." });
 
 // ---------- caches ----------
 const conjCache = new Map();
@@ -263,6 +283,121 @@ api.post("/workspace/scan", requireWs, async (req, res) => {
   } catch (e) { res.status(500).json({ error: "Scan failed", detail: e.message }); }
 });
 
+// ---------- Intel Pack (subscription tier) ----------
+const siteLatLookup = loc => {
+  const q = (loc || "").toLowerCase();
+  for (const s of LAUNCH_SITES) if (q.includes(s.name.split(" ")[0].toLowerCase()) || q.includes((s.country || "").toLowerCase())) return s.lat;
+  if (q.includes("canaveral") || q.includes("kennedy")) return 28.5;
+  if (q.includes("vandenberg")) return 34.7;
+  if (q.includes("wenchang")) return 19.6;
+  if (q.includes("taiyuan")) return 38.85;
+  if (q.includes("jiuquan")) return 40.96;
+  return null;
+};
+
+api.get("/intel/staleness", async (req, res) => { // free teaser
+  try { res.json(intel.staleness(await getSatellites())); }
+  catch (e) { res.status(502).json({ error: "Orbital data source unavailable", detail: e.message }); }
+});
+
+api.get("/intel/gabbard", async (req, res) => { // free teaser
+  try {
+    const group = String(req.query.group || "COSMOS 1408");
+    res.json(intel.gabbard(await getSatellites(), group));
+  } catch (e) { res.status(502).json({ error: "Orbital data source unavailable", detail: e.message }); }
+});
+
+api.get("/intel/conjunctions", requirePlan("operator"), async (req, res) => {
+  try {
+    const org = req.query.org && req.query.org !== "all" ? req.query.org : null;
+    const hours = Math.min(parseFloat(req.query.hours) || 3, 12);
+    const threshold = Math.min(parseFloat(req.query.thresholdKm) || 10, 50);
+    const d = await runScreening(org, hours, threshold);
+    const sats = await getSatellites();
+    const byId = new Map(sats.map(s => [s.id, s]));
+    res.json({ ...d, events: intel.augmentConjunctions(d.events, byId), tier: "pro" });
+  } catch (e) { res.status(500).json({ error: "Screening failed", detail: e.message }); }
+});
+
+api.get("/intel/fleet-risk", requirePlan("operator"), async (req, res) => {
+  try {
+    const org = req.query.org || req.workspace.org;
+    if (!org) return res.status(400).json({ error: "org required (query or workspace binding)" });
+    const sats = await getSatellites();
+    const d = await runScreening(org, 3, 10);
+    const cong = congestion(sats);
+    res.json(intel.fleetRisk(org, sats, d.events, cong.shells));
+  } catch (e) { res.status(500).json({ error: "Risk computation failed", detail: e.message }); }
+});
+
+api.get("/intel/eclipse", requirePlan("tracker"), async (req, res) => {
+  try {
+    const sats = await getSatellites();
+    const s = sats.find(x => String(x.id) === String(req.query.satId));
+    if (!s) return res.status(404).json({ error: "Satellite not found" });
+    res.json(intel.eclipseWindows(s, Math.min(parseFloat(req.query.hours) || 24, 72)));
+  } catch (e) { res.status(500).json({ error: "Eclipse computation failed", detail: e.message }); }
+});
+
+api.get("/intel/passes-pro", requirePlan("tracker"), async (req, res) => {
+  try {
+    const lat = parseFloat(req.query.lat), lon = parseFloat(req.query.lon);
+    if (Number.isNaN(lat) || Number.isNaN(lon)) return res.status(400).json({ error: "lat, lon required" });
+    const sats = await getSatellites();
+    const s = sats.find(x => String(x.id) === String(req.query.satId));
+    if (!s) return res.status(404).json({ error: "Satellite not found" });
+    res.json(intel.passesPro(s, lat, lon, Math.min(parseFloat(req.query.hours) || 24, 72), parseFloat(req.query.freqMhz) || 437.5));
+  } catch (e) { res.status(500).json({ error: "Pass computation failed", detail: e.message }); }
+});
+
+api.get("/intel/launch-correlation", requirePlan("operator"), async (req, res) => {
+  try {
+    const [sats, launches] = await Promise.all([getSatellites(), getLaunches()]);
+    res.json(intel.launchCorrelation(launches.previous, sats, siteLatLookup));
+  } catch (e) { res.status(502).json({ error: "Source unavailable", detail: e.message }); }
+});
+
+api.get("/intel/anomalies", requirePlan("operator"), async (req, res) => {
+  try { res.json(intel.anomalies(await getSatellites(), store.loadHistory())); }
+  catch (e) { res.status(502).json({ error: "Orbital data source unavailable", detail: e.message }); }
+});
+
+// ---------- plans (public pricing surface) ----------
+api.get("/plans", (req, res) => res.json({
+  plans: [
+    { id: "free", label: "Observer", price: "$0", dailyCalls: 200, includes: ["Live 3D tracking & catalog", "Launches & events", "Basic conjunction screening", "TLE staleness & Gabbard teasers"] },
+    { id: "tracker", label: "Tracker", price: "$9/mo", dailyCalls: 2000, includes: ["Everything in Observer", "Pro pass prediction with Doppler", "Optical visibility forecasting", "Eclipse windows"] },
+    { id: "operator", label: "Operator", price: "$99/mo", dailyCalls: 20000, includes: ["Everything in Tracker", "Collision probability (Pc) screening", "Fleet Risk Index + history", "Background alerting + webhooks", "Intelligence archive queries", "Weekly Fleet Intelligence Reports"] },
+    { id: "mission", label: "Mission", price: "custom", dailyCalls: null, includes: ["Everything in Operator", "Custom orgs & SLAs", "Data exports & integrations"] }
+  ],
+  activation: "Payments are handled by the operator today (contact via workspace). Plan is activated on your API key within minutes.",
+  note: "Prices are launch pricing and may change."
+}));
+
+// ---------- intelligence archive (the data moat) ----------
+api.get("/archive/stats", (req, res) => res.json(ledger.stats())); // public: shows the moat growing
+api.get("/archive/events", requirePlan("operator"), (req, res) => {
+  res.json(ledger.query({
+    type: req.query.type, org: req.query.org,
+    since: req.query.since, until: req.query.until,
+    limit: parseInt(req.query.limit) || 500
+  }));
+});
+api.get("/archive/risk-history", requirePlan("operator"), (req, res) => {
+  const org = req.query.org || req.workspace.org;
+  if (!org) return res.status(400).json({ error: "org required" });
+  res.json(ledger.riskHistory(org));
+});
+api.get("/archive/report", requirePlan("operator"), async (req, res) => {
+  try {
+    const org = req.query.org || req.workspace.org;
+    if (!org) return res.status(400).json({ error: "org required" });
+    const sats = await getSatellites();
+    const names = Object.fromEntries(orgList(sats).map(o => [o.id, o.name]));
+    res.json(ledger.weeklyReport(org, names[org]));
+  } catch (e) { res.status(500).json({ error: "Report generation failed", detail: e.message }); }
+});
+
 // ---------- admin ----------
 api.get("/admin/overview", requireAdmin, async (req, res) => {
   let catalog = 0;
@@ -285,6 +420,10 @@ api.post("/admin/broadcast", requireAdmin, (req, res) => {
 api.post("/admin/scan-all", requireAdmin, async (req, res) => {
   await scanAllWorkspaces();
   res.json({ ok: true });
+});
+api.post("/admin/workspaces/:id/plan", requireAdmin, (req, res) => {
+  const w = store.setPlan(req.params.id, req.body?.plan);
+  w ? res.json({ ok: true, id: w.id, plan: w.plan }) : res.status(404).json({ error: "Workspace not found" });
 });
 
 // ---------- exports ----------
@@ -355,9 +494,48 @@ async function snapshotPopulation() {
     store.saveHistory(sats); // element history for maneuver detection
   } catch (e) { console.error("snapshot failed:", e.message); }
 }
+// Global intelligence sweep — feeds the append-only ledger regardless of
+// whether any customer is watching. This is the compounding data asset.
+async function intelligenceSweep() {
+  try {
+    const sats = await getSatellites();
+    if (!sats.length) return;
+    const byId = new Map(sats.map(s => [s.id, s]));
+    // 1. conjunctions (global screening, with Pc)
+    const d = await runScreening(null, 3, 10);
+    const events = intel.augmentConjunctions(d.events, byId).map(ev => ({
+      org: null, aOrg: ev.a.org, bOrg: ev.b.org, aName: ev.a.name, bName: ev.b.name,
+      aId: ev.a.id, bId: ev.b.id, tca: ev.tca, missKm: ev.missKm, relVelKmS: ev.relVelKmS,
+      altKm: ev.altKm, risk: ev.risk, pc: ev.pc, pcText: ev.pcText
+    }));
+    ledger.append("conjunction", events);
+    // 2. maneuvers + anomalies
+    const hist = store.loadHistory();
+    ledger.append("maneuver", detectManeuvers(sats, hist).map(m => ({
+      org: m.org, id: m.id, name: m.name, kind: m.type, dAltKm: m.dAltKm, dInclDeg: m.dInclDeg, confidence: m.confidence
+    })));
+    ledger.append("anomaly", (intel.anomalies(sats, hist).flags || []).map(a => ({
+      org: a.org, id: a.id, name: a.name, zScore: a.zScore, severity: a.severity
+    })));
+    // 3. fleet risk for every significant operator
+    const cong = congestion(sats);
+    const orgs = orgList(sats).filter(o => o.count >= 20 && o.id !== "other").slice(0, 8);
+    for (const o of orgs) {
+      const dr = await runScreening(o.id, 3, 10);
+      const r = intel.fleetRisk(o.id, sats, dr.events, cong.shells);
+      if (!r.error) ledger.append("risk", [{ org: o.id, index: r.index, grade: r.grade, components: r.components, fleetSize: r.fleetSize }]);
+    }
+    // 4. congestion snapshot
+    ledger.append("congestion", [{ org: null, mostCongested: cong.mostCongested, totalLeo: cong.shells.reduce((s, x) => s + x.count, 0) }]);
+    console.log(`intelligence sweep archived — ledger now ${ledger.stats().totalEvents} events`);
+  } catch (e) { console.error("intelligence sweep failed:", e.message); }
+}
+
 setInterval(scanAllWorkspaces, 30 * 60 * 1000);
 setInterval(snapshotPopulation, 6 * 60 * 60 * 1000);
+setInterval(intelligenceSweep, 6 * 60 * 60 * 1000);
 setTimeout(snapshotPopulation, 10 * 1000);
+setTimeout(intelligenceSweep, 25 * 1000);
 
 // bootstrap the admin workspace
 const { admin, created } = store.ensureAdmin(process.env.ORBITIQ_ADMIN_KEY || null);
