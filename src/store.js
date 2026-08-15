@@ -26,6 +26,7 @@ export function createWorkspace(name, org, role = "member", fixedKey = null) {
   const apiKey = fixedKey || "oiq_" + crypto.randomBytes(21).toString("base64url");
   const ws = {
     id, name: String(name).slice(0, 60), org: org || null, apiKey, role,
+    plan: role === "admin" ? "pro" : "free",
     webhook: null,
     screening: { hours: 3, thresholdKm: 10 },
     createdAt: new Date().toISOString()
@@ -70,6 +71,21 @@ export function adminOverview() {
 export const findByKey = key => Object.values(db.workspaces).find(w => w.apiKey === key) || null;
 export const getWorkspace = id => db.workspaces[id] || null;
 export const allWorkspaces = () => Object.values(db.workspaces);
+export const PLANS = {
+  free:     { rank: 0, dailyCalls: 200,   label: "Observer" },
+  tracker:  { rank: 1, dailyCalls: 2000,  label: "Tracker" },
+  operator: { rank: 2, dailyCalls: 20000, label: "Operator" },
+  pro:      { rank: 2, dailyCalls: 20000, label: "Operator" } // legacy alias
+};
+export function setPlan(id, plan) {
+  const w = db.workspaces[id]; if (!w) return null;
+  w.plan = PLANS[plan] ? plan : "free";
+  save(); return w;
+}
+export function todayCalls(apiKey) {
+  const day = new Date().toISOString().slice(0, 10);
+  return (db.usage[apiKey] || {})[day] || 0;
+}
 export function updateWorkspace(id, patch) {
   const w = db.workspaces[id]; if (!w) return null;
   if (patch.webhook !== undefined) w.webhook = patch.webhook ? String(patch.webhook).slice(0, 300) : null;
