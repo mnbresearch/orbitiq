@@ -3,7 +3,7 @@ services:
     name: orbitiq
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && node scripts/make-sample-data.mjs
     startCommand: node server.js
     healthCheckPath: /api/health
     envVars:
