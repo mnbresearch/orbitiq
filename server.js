@@ -8,13 +8,15 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocketServer } from "ws";
 import * as satellite from "satellite.js";
-import { getSatellites, getLaunches, getEvents, orgList } from "./src/data.js";
+import * as backup from "./src/backup.js"; // must be first: restores the archive before stores load
+import { getSatellites, getLaunches, getEvents, orgList, dataSourceInfo } from "./src/data.js";
 import { screenConjunctions } from "./src/conjunctions.js";
 import { hohmann, launchPlan, congestion, detectManeuvers, LAUNCH_SITES } from "./src/astro.js";
 import * as intel from "./src/intel.js";
 import * as ledger from "./src/ledger.js";
 import * as store from "./src/store.js";
 import * as netops from "./src/netops.js";
+import * as fleetintel from "./src/fleetintel.js";
 import { getSpaceWeather, environmentForLedger } from "./src/spaceweather.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,7 +30,8 @@ app.use("/vendor/satellite", express.static(path.join(__dirname, "node_modules",
 const PORT = process.env.PORT || 3000;
 const api = express.Router();
 
-// ---------- optional API-key auth ----------
+// ---------- optional API-key auth + anonymous rate limiting ----------
+const anonBuckets = new Map();
 api.use((req, res, next) => {
   const key = req.headers["x-api-key"] || req.query.apiKey;
   if (key) {
@@ -40,6 +43,16 @@ api.use((req, res, next) => {
       return res.status(429).json({ error: "Daily call limit reached", plan: ws.plan, limit: plan.dailyCalls, upgrade: "Higher tiers include larger daily quotas." });
     }
     store.recordUsage(ws.apiKey);
+  } else {
+    // gentle per-IP limit for anonymous traffic so free users create workspaces
+    const ip = req.ip || "?", min = Math.floor(Date.now() / 60000);
+    if (anonBuckets.size > 5000) anonBuckets.clear();
+    const b = anonBuckets.get(ip);
+    if (!b || b.min !== min) anonBuckets.set(ip, { min, n: 1 });
+    else if (++b.n > 120) return res.status(429).json({
+      error: "Anonymous rate limit (120 req/min). Create a free workspace for metered quotas.",
+      plans: "/api/plans"
+    });
   }
   next();
 });
@@ -75,7 +88,11 @@ async function runScreening(org, hours, thresholdKm) {
 }
 
 // ---------- core data ----------
-api.get("/health", (req, res) => res.json({ ok: true, service: "OrbitIQ", version: 7, time: new Date().toISOString() }));
+api.get("/health", (req, res) => res.json({
+  ok: true, service: "OrbitIQ", version: 8, time: new Date().toISOString(),
+  dataSource: dataSourceInfo().catalog,
+  archiveBackup: backup.status()
+}));
 
 api.get("/satellites", async (req, res) => {
   try {
@@ -457,6 +474,77 @@ api.get("/export/ledger.csv", requirePlan("operator"), (req, res) => {
     .send("time,type,org,summary,miss_km,pc,risk_index,kp\n" + rows.join("\n"));
 });
 
+// ---------- v8: constellation architecture + archive trends ----------
+api.get("/intel/constellation", requirePlan("operator"), async (req, res) => {
+  try {
+    const org = req.query.org || req.workspace.org;
+    if (!org) return res.status(400).json({ error: "org required (or bind your workspace to one)" });
+    res.json(fleetintel.constellation(org, await getSatellites()));
+  } catch (e) { res.status(502).json({ error: "Orbital data source unavailable", detail: e.message }); }
+});
+
+api.get("/archive/trends", requirePlan("operator"), (req, res) => {
+  const org = req.query.org || req.workspace.org || null;
+  const days = Math.min(Math.max(parseInt(req.query.days) || 30, 7), 120);
+  res.json(fleetintel.trends(ledger.allEvents(), org, days));
+});
+
+// ---------- v8: ephemeris export ----------
+api.get("/export/ephemeris.csv", requirePlan("tracker"), async (req, res) => {
+  try {
+    const sats = await getSatellites();
+    const s = sats.find(x => String(x.id) === String(req.query.satId));
+    if (!s) return res.status(404).json({ error: "Satellite not found" });
+    const hours = Math.min(Math.max(parseFloat(req.query.hours) || 24, 1), 48);
+    const stepS = Math.min(Math.max(parseInt(req.query.step) || 60, 30), 600);
+    const rec = satellite.json2satrec(s.gp);
+    const rows = [];
+    const t0 = Date.now();
+    for (let i = 0; i <= (hours * 3600) / stepS; i++) {
+      const t = new Date(t0 + i * stepS * 1000);
+      try {
+        const pv = satellite.propagate(rec, t);
+        if (!pv?.position) continue;
+        const gmst = satellite.gstime(t);
+        const gd = satellite.eciToGeodetic(pv.position, gmst);
+        rows.push([
+          t.toISOString(),
+          satellite.degreesLat(gd.latitude).toFixed(4),
+          satellite.degreesLong(gd.longitude).toFixed(4),
+          gd.height.toFixed(2),
+          pv.position.x.toFixed(3), pv.position.y.toFixed(3), pv.position.z.toFixed(3),
+          pv.velocity ? Math.hypot(pv.velocity.x, pv.velocity.y, pv.velocity.z).toFixed(4) : ""
+        ].join(","));
+      } catch { /* skip step */ }
+    }
+    res.type("text/csv").attachment(`orbitiq-ephemeris-${s.id}.csv`)
+      .send("time_utc,lat_deg,lon_deg,alt_km,eci_x_km,eci_y_km,eci_z_km,speed_km_s\n" + rows.join("\n"));
+  } catch (e) { res.status(500).json({ error: "Ephemeris generation failed", detail: e.message }); }
+});
+
+// ---------- v8: self-serve key rotation ----------
+api.post("/workspace/rotate-key", requireWs, (req, res) => {
+  const w = store.rotateKey(req.workspace.id);
+  if (!w) return res.status(400).json({ error: "This key cannot be rotated here (admin keys are env-managed)" });
+  res.json({ workspace: { id: w.id, name: w.name }, apiKey: w.apiKey, note: "Old key is dead immediately. Store the new key — shown once." });
+});
+
+// ---------- v8: public status ----------
+api.get("/status", async (req, res) => {
+  let catalog = 0;
+  try { catalog = (await getSatellites()).length; } catch { /* source down */ }
+  res.json({
+    ok: true, version: 8,
+    uptimeS: Math.round(process.uptime()),
+    dataSource: dataSourceInfo().catalog,
+    catalogObjects: catalog,
+    archive: ledger.stats(),
+    backup: backup.status(),
+    liveClients: wss.clients.size,
+    time: new Date().toISOString()
+  });
+});
+
 api.post("/reports/share", requirePlan("operator"), async (req, res) => {
   try {
     const org = (req.body?.org && req.workspace.role === "admin") ? req.body.org : req.workspace.org;
@@ -515,6 +603,8 @@ api.get("/export/conjunctions.csv", async (req, res) => {
   } catch (e) { res.status(502).json({ error: "Export failed", detail: e.message }); }
 });
 
+// JSON 404 for unknown API routes + central error handler (robustness)
+api.use((req, res) => res.status(404).json({ error: "Unknown endpoint", docs: "/docs.html" }));
 app.use("/api", api);
 app.use("/api/v1", api);
 
@@ -555,6 +645,13 @@ app.get("/r/:token", (req, res) => {
   ${rep.closestApproach ? `<div class="card"><h2>Closest approach</h2>${esc(rep.closestApproach.aName)} ⇄ ${esc(rep.closestApproach.bName)} — <b>${esc(rep.closestApproach.missKm)} km</b>${rep.closestApproach.pcText ? `, Pc ${esc(rep.closestApproach.pcText)}` : ""}<br><span style="color:#5a6a8a;font-size:13px">TCA ${esc(new Date(rep.closestApproach.tca).toUTCString())}</span></div>` : ""}
   <div class="foot">Screening-grade intelligence computed from public orbital data.<br>Get this for your fleet — <a href="https://${esc(req.get("host") || "orbit.mnbresearch.com")}">OrbitIQ · live space traffic intelligence</a></div>
 </div></body></html>`);
+});
+
+// central error handler — last middleware so it catches everything above
+app.use((err, req, res, next) => {
+  console.error("unhandled:", err.message);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: "Internal error", detail: err.message });
 });
 
 // ---------- WebSocket live push ----------
@@ -644,8 +741,12 @@ async function intelligenceSweep() {
       })));
     } catch { /* optional */ }
     console.log(`intelligence sweep archived — ledger now ${ledger.stats().totalEvents} events`);
+    // persist the moat: back the archive up to GitHub after every sweep
+    backup.backup();
   } catch (e) { console.error("intelligence sweep failed:", e.message); }
 }
+// best-effort final backup when Render recycles the instance
+process.on("SIGTERM", async () => { try { await backup.backup(); } finally { process.exit(0); } });
 
 setInterval(scanAllWorkspaces, 30 * 60 * 1000);
 setInterval(snapshotPopulation, 6 * 60 * 60 * 1000);
@@ -665,4 +766,4 @@ if (created && !process.env.ORBITIQ_ADMIN_KEY) {
   console.log(`Admin workspace ready (${admin.name})`);
 }
 
-server.listen(PORT, () => console.log(`OrbitIQ v7 listening on http://localhost:${PORT}  (API: /api/v1, WS: /ws)`));
+server.listen(PORT, () => console.log(`OrbitIQ v8 listening on http://localhost:${PORT}  (API: /api/v1, WS: /ws)`));

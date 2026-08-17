@@ -1,83 +1,77 @@
-# OrbitIQ — Space Traffic Intelligence Platform (v3)
+# OrbitIQ — Space Traffic Intelligence
 
-Live satellite tracking, conjunction screening with a multi-tenant alerting engine, launch intelligence, maneuver detection, orbital congestion analytics, mission design tools, and a public REST + WebSocket API. Built entirely on free public data. Runs for $0. See `LAUNCH.md` for the zero-cost launch playbook and `/docs.html` for API docs.
+**Live:** [orbit.mnbresearch.com](https://orbit.mnbresearch.com) · [API docs](https://orbit.mnbresearch.com/docs.html) · [Status](https://orbit.mnbresearch.com/status.html)
 
-## What's new in v3
+OrbitIQ turns free public orbital data into screening-grade space traffic intelligence: a live 3D picture of the sky, conjunction screening with collision probability, fleet risk scoring, maneuver and anomaly detection, re-entry projection, ground-network contact planning, and a compounding detection archive — all running on zero-cost infrastructure.
 
-**Workspaces (multi-tenant SaaS core).** Create a workspace bound to an operator and get an API key that scopes every call. Per-key daily usage metering. The UI stores your key locally and turns into that organization's console.
+## What it does
 
-**Alerting engine.** A background scanner screens every workspace's fleet for close approaches every 30 minutes, deduplicates events into a per-workspace alert inbox, pushes them live over WebSocket, fires browser notifications, and POSTs to your webhook if configured.
+**Operations.** Live 3D globe tracking thousands of objects via SGP4, org pairing (scope everything to one operator), a time machine to scrub the whole sky ±6 h, aurora ovals during geomagnetic storms, launch feeds, and a command palette (⌘K).
 
-**Maneuver detection.** Epoch-over-epoch element comparison flags orbit raises, lowers, plane changes and stationkeeping across the catalog — the same signal commercial SSA providers sell.
+**Screening & safety.** Coarse-to-fine conjunction screening with 3D spatial hashing, TCA refinement, 2-D collision probability with TLE-age-scaled covariance, background scans per workspace, webhooks and WebSocket alert push.
 
-**Traffic & congestion view.** LEO shell occupancy in 25 km bins with load tiers, dominant operator per shell, and most-congested-shell reporting.
+**Intelligence (the moat).** Every detection — conjunction, maneuver, pattern-of-life anomaly, fleet risk score, re-entry candidate, space-weather snapshot — is appended to a timestamped ledger at detection time. This history cannot be reconstructed from public data later; it compounds every day the platform runs. On top of it: Fleet Risk Index with grades, weekly fleet intelligence reports with public shareable links (`/r/{token}`), daily trend analytics, and constellation architecture analysis (altitude shells, RAAN plane occupancy, inclination families).
 
-**Mission design tools.** Hohmann transfer planner (with combined plane change) and a launch-site feasibility planner (azimuths, first-order Δv from each of 12 global sites). CSV exports of the catalog and screening results.
+**Network ops.** Multi-station contact planning across a 10-station global ground network (total contact time, coverage %, longest blackout), pro pass prediction with Doppler and optical visibility, eclipse windows, ephemeris CSV export.
 
-**Command palette (Ctrl+K)**, keyboard shortcuts (1–5 for views), API docs page, WebSocket live feed, daily population snapshots for trend history.
+## Subscription tiers
 
-## Features
+| Plan | Price | Daily calls | Unlocks |
+|---|---|---|---|
+| Observer | free | 200 | live map, launches, basic screening |
+| Tracker | $9/mo | 2,000 | pro passes + Doppler, eclipse, contact planner, ephemeris, full re-entry board |
+| Operator | $99/mo | 20,000 | Pc screening, Fleet Risk, archive queries, trends, constellation analysis, weekly reports + share links, premium exports |
+| Mission | custom | custom | SLAs, custom orgs, integrations |
 
-**Mission-control UI.** Animated splash screen, glassmorphism panels, live ticker, toast alerts, hover tooltips, glowing additive-blended satellite rendering, day/night Earth shader with real Blue Marble + night-lights imagery (procedural fallback when offline), sun-synchronized lighting and terminator, camera inertia with fly-to easing, and staggered entrance animations throughout.
+Plans are enforced server-side (402 gates + per-key metering + anonymous IP rate limiting). Activation: `POST /api/admin/workspaces/{id}/plan`.
 
-**Three workspaces.** Operations (the live 3D picture), Analytics (population dashboards: altitude histogram, top operators, launch-year trend, inclination distribution — all computed live from the catalog), and Catalog (sortable, searchable table of every tracked object; click any row to fly to it).
+## Architecture
 
-**Per-object intelligence.** Selecting a satellite opens a detail drawer with live state vector, orbital elements, a ground-track mini-map, a 48-hour ground pass predictor for any observer location (with geolocation), and a persistent watchlist.
-
-**Live 3D orbital picture.** Interactive globe rendering the full active satellite catalog (~11,000+ objects from CelesTrak, refreshed every 6 hours), propagated in real time with SGP4. Drag to rotate, scroll to zoom, click any satellite for live altitude, velocity, position, and orbital elements plus its full orbit trail. Time acceleration up to 3600×.
-
-**Organization pairing.** Select an operator (SpaceX/Starlink, OneWeb, Iridium, GPS, Galileo, ISRO, Planet, Spire, crewed stations, weather agencies, debris, and more) and the entire platform scopes to that fleet — highlighting, screening, and search all follow the selected organization.
-
-**Conjunction screening.** On-demand close-approach screening: coarse SGP4 sweep with 3D spatial hashing, refined to 2-second resolution around each candidate's time of closest approach. Reports miss distance, relative velocity, altitude, and a risk tier. Screen one operator's fleet against the whole catalog, or all-vs-all.
-
-**Launch intelligence.** Upcoming and recent launches worldwide from Launch Library 2 (provider, pad, mission, orbit, status), refreshed hourly. Major launch sites are marked on the globe and rotate with the Earth.
-
-**Re-entry / decay watch.** Continuously lists the lowest-perigee objects in the catalog — the population most likely to re-enter.
-
-**Resilient by design.** All external data is cached on disk; if sources are unreachable the platform serves the last good data, then falls back to a bundled sample catalog. No API keys required anywhere.
-
-## Run locally (free)
-
-```bash
-npm install
-npm start
-# open http://localhost:3000
+```
+GitHub Actions (every 6 h)                    Render (free tier)
+┌──────────────────────────┐    raw.githubusercontent
+│ fetch CelesTrak + NOAA   │──► data-mirror branch ──► Node/Express + ws
+│ validate, force-push     │                           │  SGP4 screening engine
+└──────────────────────────┘                           │  intelligence sweeps (6 h)
+                                                       │  append-only ledger
+        data-backup branch ◄── archive backup ─────────┘
+        (restored on every boot — survives redeploys)
 ```
 
-Requires Node 18+. First load fetches the live catalog from CelesTrak (a few MB); subsequent loads are cached.
+- **Data pipeline:** CelesTrak/NOAA block many datacenter IPs, so a scheduled Action mirrors them into this repo; the server falls back `live → mirror → cache → sample` and reports provenance at `/api/status`.
+- **Archive persistence:** with `ORBITIQ_GH_TOKEN` set, the ledger + workspace store are committed to a flat `data-backup` branch after every sweep and restored on boot.
+- **Stack:** Node/Express, `ws`, satellite.js 7 (self-hosted, import maps), three.js (self-hosted), vanilla JS frontend — no build step, no framework, no paid services.
 
-## Deploy for $0
+## Self-hosting
 
-**Render (recommended, one click):** push this folder to a GitHub repo, then in render.com choose "New → Blueprint" and point it at the repo — `render.yaml` configures the free tier automatically. Free instances sleep after inactivity and wake on request.
+```bash
+npm install && node server.js        # http://localhost:3000
+```
 
-**Railway / Fly.io / any Docker host:** a `Dockerfile` is included; `docker build -t orbitiq . && docker run -p 3000:3000 orbitiq`.
-
-## API
-
-| Endpoint | Description |
+| Env var | Purpose |
 |---|---|
-| `GET /api/satellites?org=&q=&limit=` | Catalog with GP elements, filterable by org/search |
-| `GET /api/organizations` | Operators detected in the catalog with counts |
-| `GET /api/conjunctions?org=&hours=&thresholdKm=` | Close-approach screening (cached 15 min) |
-| `GET /api/launches` | Upcoming + recent launches |
-| `GET /api/events` | Space events feed (dockings, EVAs, tests) |
-| `GET /api/recent-objects` | Newest objects in orbit by intl designator |
-| `GET /api/passes?satId=&lat=&lon=` | 48 h ground pass prediction for an observer |
-| `GET /api/analytics` | Population analytics (histograms, trends) |
-| `GET /api/decay-watch` | Lowest-perigee objects (re-entry risk) |
-| `GET /api/stats` | Catalog totals by type and orbital regime |
-| `GET /api/health` | Health check |
+| `ORBITIQ_ADMIN_KEY` | stable admin API key (else printed once at boot) |
+| `ORBITIQ_GH_TOKEN` | fine-grained token (Contents RW) → archive persistence |
+| `ORBITIQ_MIRROR_BASE` | override the data-mirror URL |
+| `PORT` | listen port |
 
-## Data sources (all free)
+Deploy: `render.yaml` (Blueprint), `Dockerfile`, `fly.toml` included. Enable the **Data mirror** workflow in Actions and run it once to seed live data.
 
-- CelesTrak GP orbital data — https://celestrak.org (updated several times daily)
-- Launch Library 2 by The Space Devs — https://thespacedevs.com (free tier)
-- SGP4 propagation via satellite.js; rendering via three.js (both self-hosted, no CDN)
+## API quickstart
 
-## Honest limits
+```bash
+curl https://orbit.mnbresearch.com/api/v1/satellites?org=spacex&limit=3
+curl -X POST https://orbit.mnbresearch.com/api/v1/workspaces \
+  -H "Content-Type: application/json" -d '{"name":"My Ops","org":"spacex"}'
+# → returns your oiq_ API key (shown once)
+curl https://orbit.mnbresearch.com/api/v1/intel/fleet-risk?org=spacex -H "X-API-Key: oiq_…"
+```
 
-This is a situational-awareness and screening tool. Conjunction results use public GP elements, which carry km-level position uncertainty — they are suitable for monitoring and triage, not for operational collision-avoidance decisions (operators use higher-precision ephemerides and CDMs from Space-Track/commercial SSA providers for that). A commercial version would layer in Space-Track accounts, operator ephemeris exchange, covariance-based probability of collision, and alerting.
+Full reference: [/docs.html](https://orbit.mnbresearch.com/docs.html)
 
-## Roadmap ideas (toward a commercial product)
+## Data honesty
 
-Per-organization accounts with private ephemeris upload; email/webhook conjunction alerts; probability-of-collision (Pc) with covariance; maneuver planning suggestions; ground-station pass scheduling; historical conjunction analytics; SLA'd API tiers.
+Positions derive from public GP elements (km-level uncertainty). OrbitIQ is built for monitoring, screening and triage — not operational collision avoidance. Sources: CelesTrak, NOAA SWPC, The Space Devs.
+
+---
+© MNB Research. Built for the price of exactly zero dollars.
