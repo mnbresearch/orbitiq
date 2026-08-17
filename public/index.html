@@ -46,6 +46,7 @@
   <button id="plans-btn" style="width:auto;padding:6px 11px" title="Subscription plans">Plans</button>
   <button id="palette-btn" style="width:auto;padding:6px 11px" title="Command palette (Ctrl+K)">⌘K</button>
   <a href="/docs.html" target="_blank" style="text-decoration:none"><button style="width:auto;padding:6px 11px" title="API documentation">API</button></a>
+  <a href="/status.html" target="_blank" style="text-decoration:none"><button style="width:auto;padding:6px 11px" title="System status & data provenance">Status</button></a>
   <select id="speed" style="width:118px">
     <option value="1">1× real-time</option>
     <option value="60">60×</option>
@@ -73,6 +74,7 @@
         <button id="ws-copy" style="width:104px">Copy key</button>
         <button id="ws-logout" style="width:104px">Sign out</button>
       </div>
+      <div class="row" style="margin-top:8px"><button id="ws-rotate" style="font-size:11.5px" title="Invalidate the current key and mint a new one">Rotate API key</button></div>
     </div>
   </div>
 
@@ -233,6 +235,22 @@
           <button class="primary" id="report-share" style="width:auto;padding:7px 16px">Create share link</button>
           <input id="share-url" readonly placeholder="Shareable public link appears here">
         </div>
+      </div>
+    </div>
+
+    <div class="grid-2" style="margin-top:14px">
+      <div class="card lockable" id="trends-card">
+        <h4>Archive Trends — 30 days <span class="right" id="trends-meta"></span></h4>
+        <canvas id="ch-trends" height="190"></canvas>
+        <div class="sub" style="color:var(--text-faint);font-size:10.5px;margin-top:8px">
+          <span style="color:#38bdf8">■</span> conjunctions/day &nbsp;
+          <span style="color:#f5b944">—</span> fleet risk index &nbsp;
+          <span style="color:#67e8f9">—</span> max Kp
+        </div>
+      </div>
+      <div class="card lockable" id="const-card">
+        <h4>Constellation Architecture <span class="right" id="const-meta"></span></h4>
+        <div id="const-body"><div class="skeleton"></div></div>
       </div>
     </div>
 

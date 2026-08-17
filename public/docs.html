@@ -78,6 +78,13 @@ curl {host}/api/v1/alerts -H "X-API-Key: oiq_…"</pre>
   <div class="ep"><span class="m get">GET</span><span class="path">/archive/report</span><span class="auth">Operator</span><div class="d">Weekly Fleet Intelligence report (JSON + markdown).</div></div>
   <div class="ep"><span class="m post">POST</span><span class="path">/reports/share</span><span class="auth">Operator</span><div class="d">Mint a public, branded, live report link at <code>/r/{token}</code> — safe to forward to execs and insurers.</div></div>
 
+  <h2>Fleet analytics (v8)</h2>
+  <div class="ep"><span class="m get">GET</span><span class="path">/intel/constellation</span><span class="auth">Operator</span><div class="d">Constellation architecture from live GP elements: altitude shells, RAAN plane occupancy (15° bins), inclination families, element freshness. Param: <code>org</code>.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/archive/trends</span><span class="auth">Operator</span><div class="d">Daily aggregates from the archive: conjunction tempo, closest miss, maneuvers, anomalies, re-entries, max Kp, risk index. Params: <code>org</code>, <code>days</code> (7–120).</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/export/ephemeris.csv</span><span class="auth">Tracker</span><div class="d">Propagated ephemeris for any object: time, lat/lon/alt, ECI position, speed. Params: <code>satId</code>, <code>hours</code> (≤48), <code>step</code> (30–600 s).</div></div>
+  <div class="ep"><span class="m post">POST</span><span class="path">/workspace/rotate-key</span><span class="auth">X-API-Key</span><div class="d">Self-serve key rotation — old key dies instantly, new key returned once.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/status</span><div class="d">Public system status: data provenance (live / mirror / cache / sample), archive size, backup state, uptime. Human version at <a href="/status.html">/status.html</a>.</div></div>
+
   <h2>Environment &amp; network ops (v7)</h2>
   <div class="ep"><span class="m get">GET</span><span class="path">/spaceweather</span><div class="d">Live NOAA SWPC Kp index, storm scale, F10.7 flux, drag advisory, aurora boundary. Public.</div></div>
   <div class="ep"><span class="m get">GET</span><span class="path">/reentry</span><div class="d">Re-entry board with lifetime projections and debris-band latitudes. Public teaser (top 12); full board with a Tracker key.</div></div>

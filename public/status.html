@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OrbitIQ — System Status</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#04060c; --panel:#0b101c; --stroke:rgba(90,130,200,.18); --text:#e6edfa; --dim:#7385a3; --accent:#38bdf8; --mint:#3ecf8e; --amber:#f5b944; --red:#f26d78; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:Inter,sans-serif; font-size:14px; line-height:1.6; }
+  .wrap { max-width:760px; margin:0 auto; padding:48px 24px 80px; }
+  h1 { font-size:24px; font-weight:650; letter-spacing:-.015em; }
+  h1 em { color:var(--accent); font-style:normal; }
+  .sub { color:var(--dim); margin:4px 0 28px; font-size:13px; }
+  .banner { display:flex; align-items:center; gap:12px; background:var(--panel); border:1px solid var(--stroke); border-radius:14px; padding:18px 20px; margin-bottom:14px; }
+  .dot { width:12px; height:12px; border-radius:50%; background:var(--mint); box-shadow:0 0 14px var(--mint); }
+  .dot.warn { background:var(--amber); box-shadow:0 0 14px var(--amber); }
+  .dot.down { background:var(--red); box-shadow:0 0 14px var(--red); }
+  .banner b { font-size:16px; }
+  .banner .sub { margin:0; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  @media (max-width:640px){ .grid { grid-template-columns:repeat(2,1fr);} }
+  .card { background:var(--panel); border:1px solid var(--stroke); border-radius:12px; padding:16px 18px; }
+  .card .v { font-size:22px; font-weight:650; color:var(--accent); font-variant-numeric:tabular-nums; }
+  .card .v.mint { color:var(--mint); } .card .v.amber { color:var(--amber); }
+  .card .l { font-size:10.5px; color:var(--dim); text-transform:uppercase; letter-spacing:.7px; margin-top:3px; }
+  .row { background:var(--panel); border:1px solid var(--stroke); border-radius:12px; padding:14px 18px; margin-top:12px; display:flex; justify-content:space-between; align-items:center; font-size:13px; }
+  .row .k { color:var(--dim); }
+  .pill { padding:2px 12px; border-radius:99px; font:600 11px Inter; letter-spacing:.5px; }
+  .pill.live { background:#0f2b1d; color:var(--mint); border:1px solid #1e5c3a; }
+  .pill.mirror { background:#10233c; color:var(--accent); border:1px solid #1e3a5c; }
+  .pill.cache, .pill.sample, .pill.pending { background:#2b2413; color:var(--amber); border:1px solid #5c4a1e; }
+  .pill.off { background:#2b1517; color:var(--red); border:1px solid #5c1e2a; }
+  a { color:var(--accent); } .foot { margin-top:30px; font-size:12px; color:var(--dim); }
+  mono, .mono { font-family:"IBM Plex Mono",monospace; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Orbit<em>IQ</em> status</h1>
+  <div class="sub">Live system health, data provenance and archive integrity. Auto-refreshes every 60 s.</div>
+
+  <div class="banner"><span class="dot" id="dot"></span><div><b id="headline">Checking…</b><div class="sub" id="headsub">contacting the platform</div></div></div>
+
+  <div class="grid">
+    <div class="card"><div class="v" id="v-catalog">—</div><div class="l">objects tracked</div></div>
+    <div class="card"><div class="v" id="v-archive">—</div><div class="l">archived detections</div></div>
+    <div class="card"><div class="v" id="v-uptime">—</div><div class="l">uptime</div></div>
+    <div class="card"><div class="v" id="v-clients">—</div><div class="l">live clients</div></div>
+    <div class="card"><div class="v" id="v-version">—</div><div class="l">platform version</div></div>
+    <div class="card"><div class="v" id="v-newest">—</div><div class="l">last detection</div></div>
+  </div>
+
+  <div class="row"><span class="k">Orbital data source</span><span class="pill pending" id="p-source">checking</span></div>
+  <div class="row"><span class="k">Archive backup (survives redeploys)</span><span class="pill off" id="p-backup">checking</span></div>
+  <div class="row"><span class="k">Event types in archive</span><span class="mono" id="p-types">—</span></div>
+
+  <div class="foot">
+    Data: CelesTrak GP · self-hosted mirror · NOAA SWPC · The Space Devs.
+    “live” = fetched direct; “mirror” = via our 6-hourly GitHub pipeline; “sample” = bundled fallback.
+    <br><a href="/">← back to the platform</a> · <a href="/docs.html">API docs</a>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmtUp = s => s >= 86400 ? (s/86400).toFixed(1) + " d" : s >= 3600 ? (s/3600).toFixed(1) + " h" : Math.round(s/60) + " min";
+async function refresh() {
+  try {
+    const d = await (await fetch("/api/status", { cache: "no-store" })).json();
+    $("dot").className = "dot" + (d.dataSource.source === "sample" ? " warn" : "");
+    $("headline").textContent = d.ok ? "All systems operational" : "Degraded";
+    $("headsub").textContent = "checked " + new Date(d.time).toUTCString();
+    $("v-catalog").textContent = (d.catalogObjects || 0).toLocaleString();
+    $("v-archive").textContent = (d.archive.totalEvents || 0).toLocaleString();
+    $("v-uptime").textContent = fmtUp(d.uptimeS);
+    $("v-clients").textContent = d.liveClients;
+    $("v-version").textContent = "v" + d.version;
+    $("v-newest").textContent = d.archive.newest ? new Date(d.archive.newest).toUTCString().slice(17, 25) + "Z" : "—";
+    const src = d.dataSource.source || "pending";
+    const ps = $("p-source"); ps.textContent = src.toUpperCase(); ps.className = "pill " + src;
+    const pb = $("p-backup");
+    if (d.backup.enabled) { pb.textContent = d.backup.lastBackupAt ? "ON · " + new Date(d.backup.lastBackupAt).toUTCString().slice(17,25) + "Z" : "ON · pending first sweep"; pb.className = "pill live"; }
+    else { pb.textContent = "OFF · set ORBITIQ_GH_TOKEN"; pb.className = "pill off"; }
+    $("p-types").textContent = Object.entries(d.archive.byType || {}).map(([k,v]) => k + ":" + v).join("  ") || "—";
+  } catch (e) {
+    $("dot").className = "dot down";
+    $("headline").textContent = "Unreachable";
+    $("headsub").textContent = e.message;
+  }
+}
+refresh(); setInterval(refresh, 60000);
+</script>
+</body>
+</html>
