@@ -9,7 +9,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FILE = path.join(__dirname, "..", "data", "store.json");
 const HISTORY_FILE = path.join(__dirname, "..", "data", "elements-history.json");
 
-let db = { workspaces: {}, alerts: {}, snapshots: [], usage: {} };
+let db = { workspaces: {}, alerts: {}, snapshots: [], usage: {}, shares: {} };
 try { db = { ...db, ...JSON.parse(fs.readFileSync(FILE, "utf8")) }; } catch { /* fresh */ }
 
 let saveTimer = null;
@@ -81,6 +81,19 @@ export function setPlan(id, plan) {
   const w = db.workspaces[id]; if (!w) return null;
   w.plan = PLANS[plan] ? plan : "free";
   save(); return w;
+}
+// ---------- shareable report links ----------
+export function createShare(org, orgName, createdBy) {
+  db.shares = db.shares || {};
+  const token = crypto.randomBytes(9).toString("base64url");
+  db.shares[token] = { org, orgName, createdBy, createdAt: new Date().toISOString(), views: 0 };
+  save();
+  return token;
+}
+export function getShare(token) {
+  const s = (db.shares || {})[token] || null;
+  if (s) { s.views = (s.views || 0) + 1; save(); }
+  return s;
 }
 export function todayCalls(apiKey) {
   const day = new Date().toISOString().slice(0, 10);
