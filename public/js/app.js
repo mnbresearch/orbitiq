@@ -178,9 +178,9 @@ for (const [, lat, lon] of SITES) {
 
 // ---------------- camera controls (inertia) ----------------
 let rotY = 0.6, rotX = 0.35, dist = 22, velY = 0, velX = 0;
-let targetRotY = null, targetRotX = null; // for fly-to
+let targetRotY = null, targetRotX = null, targetDist = null; // for fly-to
 let dragging = false, px = 0, py = 0;
-canvas.addEventListener("pointerdown", e => { dragging = true; px = e.clientX; py = e.clientY; targetRotY = targetRotX = null; });
+canvas.addEventListener("pointerdown", e => { dragging = true; px = e.clientX; py = e.clientY; targetRotY = targetRotX = targetDist = null; });
 addEventListener("pointerup", () => dragging = false);
 addEventListener("pointermove", e => {
   if (dragging) {
@@ -190,7 +190,12 @@ addEventListener("pointermove", e => {
   }
   hoverX = e.clientX; hoverY = e.clientY; hoverDirty = true;
 });
-canvas.addEventListener("wheel", e => { dist = Math.max(7.6, Math.min(90, dist + e.deltaY * 0.02)); }, { passive: true });
+canvas.addEventListener("wheel", e => { targetDist = null; dist = Math.max(7.6, Math.min(90, dist + e.deltaY * 0.02)); }, { passive: true });
+function flyToWorld(v, d = 14) {
+  targetRotX = Math.asin(Math.max(-1, Math.min(1, v.y / v.length())));
+  targetRotY = Math.atan2(v.x, v.z);
+  if (d) targetDist = d;
+}
 
 // ---------------- satellite layer ----------------
 function glowTexture(ring = false) {
@@ -318,13 +323,11 @@ canvas.addEventListener("click", e => {
 });
 
 // ---------------- selection / drawer ----------------
-function flyTo(s) {
+function flyTo(s, d = 15) {
   try {
     const p = satellite.propagate(s.rec, new Date(simTime))?.position;
     if (!p) return;
-    const v = new THREE.Vector3(p.x * SCALE, p.z * SCALE, -p.y * SCALE).normalize();
-    targetRotX = Math.asin(v.y);
-    targetRotY = Math.atan2(v.x, v.z);
+    flyToWorld(new THREE.Vector3(p.x * SCALE, p.z * SCALE, -p.y * SCALE), d);
   } catch {}
 }
 function selectSat(s, fly = false) {
@@ -372,6 +375,7 @@ $("drawer-close").addEventListener("click", () => {
   $("drawer").classList.remove("open");
   marker.visible = false; selectedSat = null;
   if (trailLine) { scene.remove(trailLine); trailLine.geometry.dispose(); trailLine = null; }
+  clearSelectionFx();
 });
 
 // ground track mini-map
@@ -492,7 +496,7 @@ async function loadCatalog() {
 async function loadLaunches() {
   try {
     const d = await api("/api/launches");
-    const fmt = l => `<div class="item ${(l.status || "").toLowerCase().includes("go") || (l.status || "").toLowerCase().includes("success") ? "go" : "tbd"}">
+    const fmt = l => `<div class="item ${(l.status || "").toLowerCase().includes("go") || (l.status || "").toLowerCase().includes("success") ? "go" : "tbd"}" data-loc="${String(l.location || l.pad || "").replace(/"/g, "")}" title="Hover to see launch site on globe">
       <b>${l.name}</b>
       <div class="sub">${l.provider || ""} · ${l.location || l.pad || ""}</div>
       <div class="sub">${l.net ? new Date(l.net).toUTCString().slice(0, 25) : ""} · ${l.status || ""}</div></div>`;
@@ -523,14 +527,22 @@ async function loadRecent() {
 
 async function loadDecay() {
   try {
-    const d = await api("/api/decay-watch");
-    $("decaylist").innerHTML = d.objects.slice(0, 12).map(o => `
-      <div class="item ${o.perigeeKm < 180 ? "CRITICAL" : o.perigeeKm < 250 ? "MODERATE" : "LOW"}">
-        <b>${o.name}</b><span class="risk">${o.perigeeKm} km</span>
-        <div class="sub">NORAD ${o.id} · apogee ${o.apogeeKm} km · ${o.type}</div>
-      </div>`).join("") || `<div class="item go"><span class="sub">No low-perigee objects.</span></div>`;
+    const d = await api("/api/reentry");
+    $("decaylist").innerHTML = d.objects.slice(0, 12).map(o => {
+      const sev = (o.class === "IMMINENT" || o.class === "CRITICAL") ? "CRITICAL" : o.class === "MONTHS" ? "MODERATE" : "LOW";
+      const life = o.lifetimeDays !== null
+        ? `<div class="life"><i style="width:${Math.max(4, 100 - Math.min(100, (Math.log10(Math.max(o.lifetimeDays, 1)) / 3.56) * 100)).toFixed(0)}%"></i></div>`
+        : "";
+      return `<div class="item clickable ${sev}" data-id="${o.id}">
+        <b>${o.name}</b><span class="risk">${o.class}</span>
+        <div class="sub">perigee ${o.perigeeKm} km${o.lifetimeDays !== null ? ` · ≈${o.lifetimeDays.toLocaleString()} d left (proj.)` : ""} · band ${o.riskBandLat}</div>
+        ${life}</div>`;
+    }).join("") || `<div class="item go"><span class="sub">No low-perigee objects.</span></div>`;
+    document.querySelectorAll("#decaylist [data-id]").forEach(n => n.addEventListener("click", () => {
+      const s = sats.find(x => x.id === +n.dataset.id); if (s) selectSat(s, true);
+    }));
   } catch (e) {
-    $("decaylist").innerHTML = `<div class="item"><span class="sub">Decay feed unavailable.</span></div>`;
+    $("decaylist").innerHTML = `<div class="item"><span class="sub">Re-entry feed unavailable.</span></div>`;
   }
 }
 
@@ -587,7 +599,7 @@ $("runconj").addEventListener("click", async () => {
         <div class="sub">${d.screened} primaries vs ${d.catalogSize} objects · ${d.windowHours}h window · &lt;${d.thresholdKm} km</div></div>`;
     } else {
       $("conjlist").innerHTML = d.events.slice(0, 25).map((ev, i) => `
-        <div class="item ${ev.risk}" style="animation-delay:${i * 0.04}s">
+        <div class="item clickable ${ev.risk}" style="animation-delay:${i * 0.04}s" data-pair-a="${ev.a.id}" data-pair-b="${ev.b.id}" title="Hover to view on globe · click to pin">
           <span class="risk">${ev.risk}</span><b>${ev.missKm} km miss</b>
           <div class="sub">${ev.a.name} ⇄ ${ev.b.name}</div>
           <div class="sub">TCA ${new Date(ev.tca).toUTCString().slice(0, 25)} · ${ev.relVelKmS ?? "?"} km/s · alt ${ev.altKm ?? "?"} km</div>
@@ -600,22 +612,24 @@ $("runconj").addEventListener("click", async () => {
 });
 
 // filters
-$("orgsel").addEventListener("change", e => { selectedOrg = e.target.value; recolor(); });
+$("orgsel").addEventListener("change", e => { selectedOrg = e.target.value; recolor(); flashConstellation(); });
 $("search").addEventListener("input", e => { searchTerm = e.target.value.trim().toUpperCase(); recolor(); });
 $("regime").addEventListener("change", e => { selectedRegime = e.target.value; recolor(); });
 $("typefilter").addEventListener("change", e => { selectedType = e.target.value; recolor(); });
 $("speed").addEventListener("change", e => { timeSpeed = parseFloat(e.target.value); });
 
 // ---------------- views ----------------
-const VIEWS = ["analytics", "traffic", "tools", "catalog"];
+const VIEWS = ["intel", "analytics", "traffic", "tools", "catalog"];
 function switchView(v) {
   document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x.dataset.view === v));
   for (const name of VIEWS) $("view-" + name)?.classList.toggle("active", v === name);
   $("sidebar").classList.toggle("hidden", v !== "ops");
+  const tb = $("timebar"); if (tb) tb.style.display = v === "ops" ? "" : "none";
   $("drawer").classList.remove("open");
   if (v === "analytics") loadAnalytics();
   if (v === "catalog") renderCatalog();
   if (v === "traffic") loadTraffic();
+  if (v === "intel") loadIntel();
 }
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => switchView(t.dataset.view)));
 
@@ -766,7 +780,12 @@ function loop() {
       if (Math.abs(targetRotY - rotY) < 0.002) targetRotY = targetRotX = null;
     }
     if (Math.abs(velY) < 0.00004 && targetRotY === null) rotY += 0.00035; // idle drift
+    if (targetDist !== null) {
+      dist += (targetDist - dist) * 0.07;
+      if (Math.abs(targetDist - dist) < 0.05) targetDist = null;
+    }
   }
+  try { fxTick(now, nowMs); v7Tick(now, nowMs); } catch {}
   camera.position.set(
     dist * Math.cos(rotX) * Math.sin(rotY),
     dist * Math.sin(rotX),
@@ -821,6 +840,7 @@ async function refreshWorkspaceUI() {
   if (!wsKey) {
     $("ws-disconnected").style.display = ""; $("ws-connected").style.display = "none";
     $("alerts-panel").style.display = "none"; $("ws-status").textContent = "not connected";
+    wsPlan = "free"; wsOrg = null; wsRole = null;
     return;
   }
   try {
@@ -829,8 +849,10 @@ async function refreshWorkspaceUI() {
     $("alerts-panel").style.display = "";
     $("ws-status").textContent = "connected";
     $("ws-title").textContent = d.workspace.name;
+    wsPlan = d.workspace.plan || "free"; wsOrg = d.workspace.org || null; wsRole = d.workspace.role || "member";
+    const planLabel = { free: "Observer", tracker: "Tracker", operator: "Operator", pro: "Operator" }[wsPlan] || wsPlan;
     const today = new Date().toISOString().slice(0, 10);
-    $("ws-sub").innerHTML = `${d.workspace.org ? (orgNames[d.workspace.org] || d.workspace.org) + " · " : ""}key ${d.workspace.apiKeyMasked} · ${(d.usage[today] || 0)} calls today`;
+    $("ws-sub").innerHTML = `${d.workspace.org ? (orgNames[d.workspace.org] || d.workspace.org) + " · " : ""}key ${d.workspace.apiKeyMasked} · ${(d.usage[today] || 0)} calls today<span class="plan-pill ${wsPlan}">${planLabel}</span>`;
     $("ws-webhook").value = d.workspace.webhook || "";
     if (d.workspace.org && $("orgsel").value === "all") {
       $("orgsel").value = d.workspace.org; selectedOrg = d.workspace.org; recolor();
@@ -1046,6 +1068,7 @@ function closePalette() { pal.classList.remove("open"); }
 function paletteActions() {
   return [
     { k: "View", label: "Operations", run: () => switchView("ops") },
+    { k: "View", label: "Intelligence console", run: () => switchView("intel") },
     { k: "View", label: "Analytics", run: () => switchView("analytics") },
     { k: "View", label: "Traffic & congestion", run: () => switchView("traffic") },
     { k: "View", label: "Mission tools", run: () => switchView("tools") },
@@ -1053,7 +1076,10 @@ function paletteActions() {
     { k: "Action", label: "Run conjunction screening", run: () => { switchView("ops"); $("runconj").click(); } },
     { k: "Action", label: "Fly to ISS", run: () => { const s = sats.find(x => x.name.startsWith("ISS")); if (s) { switchView("ops"); selectSat(s, true); } } },
     { k: "Action", label: "Toggle debris visibility", run: () => { const f = $("typefilter"); f.value = f.value === "DEBRIS" ? "all" : "DEBRIS"; f.dispatchEvent(new Event("change")); } },
-    { k: "Action", label: "Download catalog CSV", run: () => location.href = "/api/export/catalog.csv" }
+    { k: "Action", label: "Download catalog CSV", run: () => location.href = "/api/export/catalog.csv" },
+    { k: "Action", label: "View subscription plans", run: () => openPricing() },
+    { k: "Action", label: "Plan ground station contacts", run: () => { switchView("tools"); $("cp-sat").focus(); } },
+    { k: "Action", label: "Back to real time", run: () => $("tm-live").click() }
   ];
 }
 function renderPalette(q) {
@@ -1087,9 +1113,194 @@ addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); pal.classList.contains("open") ? closePalette() : openPalette(); return; }
   if (e.key === "Escape") { closePalette(); $("drawer").classList.remove("open"); return; }
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
-  const map = { 1: "ops", 2: "analytics", 3: "traffic", 4: "tools", 5: "catalog" };
+  const map = { 1: "ops", 2: "intel", 3: "analytics", 4: "traffic", 5: "tools", 6: "catalog" };
   if (map[e.key]) switchView(map[e.key]);
 });
+
+// ============================================================
+// v4 — live globe link: touch a panel item, see it on the globe
+// ============================================================
+const satPos = (s, t) => {
+  try {
+    const p = satellite.propagate(s.rec, t)?.position;
+    if (p && !Number.isNaN(p.x)) return new THREE.Vector3(p.x * SCALE, p.z * SCALE, -p.y * SCALE);
+  } catch {}
+  return null;
+};
+function ringSprite(hex, size = 0.55) {
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(true), color: hex, transparent: true, depthWrite: false }));
+  sp.scale.set(size, size, 1); sp.visible = false; scene.add(sp); return sp;
+}
+
+// -- conjunction pair focus --
+const pairRingA = ringSprite(0xf5b944), pairRingB = ringSprite(0xf26d78);
+const pairLine = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+  new THREE.LineBasicMaterial({ color: 0x67e8f9, transparent: true, opacity: 0.9 })
+);
+pairLine.visible = false; scene.add(pairLine);
+let pairFocus = null, pairPinned = false;
+function setPairFocus(idA, idB, fly = true) {
+  const a = sats.find(s => s.id === +idA), b = sats.find(s => s.id === +idB);
+  if (!a || !b) return;
+  pairFocus = { a, b };
+  pairRingA.visible = pairRingB.visible = pairLine.visible = true;
+  if (fly) {
+    const t = new Date(simTime), pa = satPos(a, t), pb = satPos(b, t);
+    if (pa && pb) flyToWorld(pa.clone().add(pb).multiplyScalar(0.5), Math.max(11, pa.distanceTo(new THREE.Vector3()) + 3));
+  }
+}
+function clearPairFocus() {
+  if (pairPinned) return;
+  pairFocus = null;
+  pairRingA.visible = pairRingB.visible = pairLine.visible = false;
+}
+
+// -- hover ring for any list satellite --
+const hoverRing = ringSprite(0x67e8f9, 0.5);
+let hoverSat = null;
+function setHoverSat(id) {
+  hoverSat = sats.find(s => s.id === +id) || null;
+  hoverRing.visible = !!hoverSat;
+}
+
+// -- launch site beacons --
+const SITE_KEYWORDS = [
+  ["vandenberg", 1], ["canaveral", 0], ["kennedy", 0], ["starbase", 2], ["boca chica", 2],
+  ["baikonur", 3], ["kourou", 4], ["guiana", 4], ["sriharikota", 5], ["satish", 5],
+  ["jiuquan", 6], ["wenchang", 7], ["tanegashima", 8], ["mahia", 9], ["rocket lab", 9],
+  ["plesetsk", 10], ["xichang", 11], ["taiyuan", 6], ["haiyang", 6], ["andoya", 10], ["andøya", 10]
+];
+const beacons = [];
+for (let i = 0; i < 3; i++) {
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(true), color: 0xf5b944, transparent: true, depthWrite: false }));
+  sp.visible = false; earthGroup.add(sp); beacons.push(sp);
+}
+let beaconLocal = null, beaconT0 = 0;
+function setBeacon(locString) {
+  const q = (locString || "").toLowerCase();
+  const hit = SITE_KEYWORDS.find(([k]) => q.includes(k));
+  if (!hit) { clearBeacon(); return; }
+  const [, lat, lon] = SITES[hit[1]];
+  beaconLocal = llToScene(lat, lon, 1.01);
+  beaconT0 = performance.now();
+  beacons.forEach(b => { b.visible = true; b.position.copy(beaconLocal); });
+  flyToWorld(earthGroup.localToWorld(beaconLocal.clone()), 12.5);
+}
+function clearBeacon() { beaconLocal = null; beacons.forEach(b => b.visible = false); }
+
+// -- selected satellite: coverage footprint + velocity vector --
+let footprint = null, velArrow = null, footprintAt = 0;
+function clearSelectionFx() {
+  if (footprint) { scene.remove(footprint); footprint.geometry.dispose(); footprint = null; }
+  if (velArrow) { scene.remove(velArrow); velArrow = null; }
+}
+function updateSelectionFx(now) {
+  if (!selectedSat) { clearSelectionFx(); return; }
+  let pv;
+  try { pv = satellite.propagate(selectedSat.rec, now); } catch { return; }
+  const p = pv?.position, v = pv?.velocity;
+  if (!p || Number.isNaN(p.x)) return;
+  const pos = new THREE.Vector3(p.x * SCALE, p.z * SCALE, -p.y * SCALE);
+  // velocity vector (mint arrow)
+  if (v) {
+    const dir = new THREE.Vector3(v.x, v.z, -v.y).normalize();
+    if (!velArrow) { velArrow = new THREE.ArrowHelper(dir, pos, 1.5, 0x3ecf8e, 0.35, 0.18); scene.add(velArrow); }
+    velArrow.position.copy(pos); velArrow.setDirection(dir);
+  }
+  // coverage footprint (recompute every ~500 ms)
+  if (performance.now() - footprintAt > 500) {
+    footprintAt = performance.now();
+    const rKm = Math.hypot(p.x, p.y, p.z), R = 6371;
+    const half = Math.acos(Math.min(1, R / rKm));
+    const u = new THREE.Vector3(p.x, p.y, p.z).normalize(); // ECI frame
+    const e1 = new THREE.Vector3(0, 0, 1).cross(u).normalize();
+    if (!e1.lengthSq()) e1.set(1, 0, 0);
+    const e2 = u.clone().cross(e1).normalize();
+    const pts = [];
+    for (let i = 0; i <= 72; i++) {
+      const th = (i / 72) * Math.PI * 2;
+      const q = u.clone().multiplyScalar(Math.cos(half))
+        .add(e1.clone().multiplyScalar(Math.sin(half) * Math.cos(th)))
+        .add(e2.clone().multiplyScalar(Math.sin(half) * Math.sin(th)))
+        .multiplyScalar(R * 1.002 * SCALE);
+      pts.push(new THREE.Vector3(q.x, q.z, -q.y)); // ECI -> scene
+    }
+    if (footprint) { scene.remove(footprint); footprint.geometry.dispose(); }
+    footprint = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({ color: 0x5aa7ff, transparent: true, opacity: 0.55 }));
+    scene.add(footprint);
+  }
+}
+
+// -- constellation flash on org change --
+let flashT0 = 0;
+function flashConstellation() { flashT0 = performance.now(); }
+
+// -- per-frame effects driver (called from main loop) --
+function fxTick(now, nowMs) {
+  if (pairFocus) {
+    const pa = satPos(pairFocus.a, now), pb = satPos(pairFocus.b, now);
+    if (pa && pb) {
+      const pulse = 0.5 + Math.sin(nowMs / 220) * 0.1;
+      pairRingA.position.copy(pa); pairRingA.scale.set(pulse, pulse, 1);
+      pairRingB.position.copy(pb); pairRingB.scale.set(pulse, pulse, 1);
+      pairLine.geometry.setFromPoints([pa, pb]);
+      pairLine.material.opacity = 0.55 + Math.sin(nowMs / 180) * 0.35;
+    }
+  }
+  if (hoverSat) {
+    const p = satPos(hoverSat, now);
+    if (p) { hoverRing.position.copy(p); const s = 0.45 + Math.sin(nowMs / 250) * 0.08; hoverRing.scale.set(s, s, 1); }
+  }
+  if (beaconLocal) {
+    for (let i = 0; i < beacons.length; i++) {
+      const t = ((nowMs - beaconT0) / 1400 + i / beacons.length) % 1;
+      const s = 0.15 + t * 1.1;
+      beacons[i].scale.set(s, s, 1);
+      beacons[i].material.opacity = (1 - t) * 0.9;
+    }
+  }
+  updateSelectionFx(now);
+  if (flashT0 && nowMs - flashT0 < 900) {
+    const k = (nowMs - flashT0) / 900;
+    const gain = 1 + Math.sin(k * Math.PI) * 1.2;
+    const c = new THREE.Color(), dimC = new THREE.Color(0x1c2b4a);
+    for (let i = 0; i < sats.length; i++) {
+      const s = sats[i];
+      if (matches(s)) { c.setHex(ORG_COLORS[s.org] ?? 0x7d92b8).multiplyScalar(gain); }
+      else c.copy(dimC);
+      colorAttr.setXYZ(i, Math.min(1, c.r), Math.min(1, c.g), Math.min(1, c.b));
+    }
+    colorAttr.needsUpdate = true;
+  } else if (flashT0 && nowMs - flashT0 >= 900) { flashT0 = 0; recolor(); }
+}
+
+// -- delegated hover wiring: panels -> globe --
+$("conjlist").addEventListener("mouseover", e => {
+  const it = e.target.closest("[data-pair-a]");
+  if (it) setPairFocus(it.dataset.pairA, it.dataset.pairB, true);
+});
+$("conjlist").addEventListener("mouseleave", () => clearPairFocus());
+$("conjlist").addEventListener("click", e => {
+  const it = e.target.closest("[data-pair-a]");
+  if (!it) return;
+  pairPinned = !pairPinned;
+  if (pairPinned) { setPairFocus(it.dataset.pairA, it.dataset.pairB, true); toast("Conjunction pinned to globe — click again to release", "info", 4000); }
+  else clearPairFocus();
+});
+$("launchlist").addEventListener("mouseover", e => {
+  const it = e.target.closest("[data-loc]");
+  if (it) setBeacon(it.dataset.loc);
+});
+$("launchlist").addEventListener("mouseleave", () => clearBeacon());
+for (const listId of ["decaylist", "maneuverlist", "recentlist", "watchlist"]) {
+  $(listId).addEventListener("mouseover", e => {
+    const it = e.target.closest("[data-id]");
+    if (it) setHoverSat(it.dataset.id);
+  });
+  $(listId).addEventListener("mouseleave", () => setHoverSat(null));
+}
 
 // ---------- v3 boot hooks ----------
 (async function bootV3() {
@@ -1099,3 +1310,338 @@ addEventListener("keydown", e => {
   refreshWorkspaceUI();
   setInterval(loadAlerts, 5 * 60 * 1000);
 })();
+
+// ============================================================
+// v7 — intelligence console, space environment, time machine,
+//      ground network planner, plans & upsell surfaces
+// ============================================================
+let wsPlan = "free", wsOrg = null, wsRole = null, spaceWx = null;
+
+// ---------- time machine ----------
+const tmRange = $("tm-range"), tmLabel = $("tm-label"), timebar = $("timebar");
+let tmDragging = false, tmSyncAt = 0;
+const fmtDur = min => min >= 60 ? (min / 60).toFixed(1) + " h" : Math.round(min) + " min";
+tmRange.addEventListener("input", () => {
+  tmDragging = true;
+  simTime = Date.now() + (+tmRange.value) * 60000;
+  if (selectedSat) { drawTrail(selectedSat); renderDrawer(); }
+});
+tmRange.addEventListener("change", () => { tmDragging = false; });
+$("tm-live").addEventListener("click", () => {
+  simTime = Date.now(); timeSpeed = 1; $("speed").value = "1"; tmRange.value = 0;
+  if (selectedSat) drawTrail(selectedSat);
+  toast("Back to real time", "ok", 2200);
+});
+function tmSync(nowMs) {
+  if (nowMs - tmSyncAt < 400) return;
+  tmSyncAt = nowMs;
+  const offMin = (simTime - Date.now()) / 60000;
+  const off = Math.abs(offMin) > 0.75;
+  timebar.classList.toggle("off", off);
+  tmLabel.textContent = off ? (offMin > 0 ? "T + " : "T − ") + fmtDur(Math.abs(offMin)) : "real time";
+  if (!tmDragging && off) tmRange.value = Math.max(-360, Math.min(360, Math.round(offMin)));
+}
+
+// ---------- space weather + aurora ----------
+const auroraRings = [];
+function buildAuroraRing(latDeg, rMul) {
+  const pts = [];
+  for (let i = 0; i <= 128; i++) pts.push(llToScene(latDeg, (i / 128) * 360 - 180, rMul));
+  const ring = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineBasicMaterial({ color: 0x67f9a5, transparent: true, opacity: 0.3 })
+  );
+  earthGroup.add(ring);
+  return ring;
+}
+function setAurora(w) {
+  for (const r of auroraRings) { earthGroup.remove(r); r.geometry.dispose(); }
+  auroraRings.length = 0;
+  if (!w.auroraVisible) return;
+  for (const lat of [w.auroraLat, w.auroraLat - 4, -w.auroraLat, -(w.auroraLat - 4)])
+    auroraRings.push(buildAuroraRing(lat, 1.014));
+}
+async function loadSpaceWeather() {
+  try {
+    spaceWx = await api("/api/spaceweather");
+    $("kp-val").textContent = spaceWx.kp.toFixed(1);
+    const chip = $("kp-chip");
+    chip.className = "kp-chip" + (spaceWx.kp >= 6 ? " storm" : spaceWx.kp >= 4 ? " warn" : "");
+    chip.title = `${spaceWx.stormLabel} (${spaceWx.storm}) · F10.7 ${spaceWx.f107 ?? "—"} · ${spaceWx.advisory}`;
+    setAurora(spaceWx);
+    renderEnvCard();
+    if (spaceWx.kp >= 5) toast(`Geomagnetic storm in progress — ${spaceWx.stormLabel} (Kp ${spaceWx.kp}). LEO drag elevated.`, "err", 9000);
+  } catch { /* chip stays dashed */ }
+}
+function renderEnvCard() {
+  if (!spaceWx || !$("env-grid")) return;
+  const w = spaceWx;
+  $("env-src").textContent = w.sampled ? "sample data" : "NOAA SWPC · live";
+  $("env-grid").innerHTML = [
+    [w.kp.toFixed(1), "Kp index", w.kp >= 5],
+    [w.storm, w.stormLabel, w.kp >= 5],
+    [w.f107 ?? "—", "F10.7 solar flux", false],
+    [w.auroraLat + "°", "aurora boundary", false]
+  ].map(([v, l, s]) => `<div class="env-cell${s ? " storm" : ""}"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+  $("env-advisory").textContent = w.advisory + (w.auroraVisible ? " Aurora ovals are drawn on the globe." : "");
+}
+
+// ---------- per-frame v7 effects ----------
+function v7Tick(now, nowMs) {
+  tmSync(nowMs);
+  for (let i = 0; i < auroraRings.length; i++)
+    auroraRings[i].material.opacity = 0.2 + 0.16 * Math.sin(nowMs / 620 + i * 1.7);
+}
+
+// ---------- plan lock / upsell helpers ----------
+const isPlanErr = e => /plan required/i.test(e.message);
+function clearLock(card) { card.querySelectorAll(".locked-overlay").forEach(n => n.remove()); }
+function setLock(card, plan, subMsg) {
+  clearLock(card);
+  const ov = document.createElement("div");
+  ov.className = "locked-overlay";
+  ov.innerHTML = `<div><div class="lk-ico">🔒</div><div class="lk-plan">${plan} plan</div>
+    <div class="lk-sub">${subMsg || `This intelligence is part of the ${plan} tier.`}</div>
+    <button class="primary">View plans</button></div>`;
+  ov.querySelector("button").addEventListener("click", openPricing);
+  card.appendChild(ov);
+}
+
+// ---------- pricing modal ----------
+const pricing = $("pricing");
+async function openPricing() {
+  pricing.classList.add("open");
+  try {
+    const d = await api("/api/plans");
+    $("plans-grid").innerHTML = d.plans.map(p => {
+      const current = wsKey && (wsPlan === p.id || (wsPlan === "pro" && p.id === "operator"));
+      const mail = `mailto:mnbgotyou@gmail.com?subject=${encodeURIComponent("OrbitIQ " + p.label + " plan")}&body=${encodeURIComponent("Workspace key prefix: " + (wsKey ? wsKey.slice(0, 12) + "…" : "(create a workspace in the app first)"))}`;
+      return `<div class="plan-card${p.id === "operator" ? " hot" : ""}${current ? " current" : ""}">
+        <div class="pn">${p.label}</div>
+        <div class="pp">${p.price.replace("/mo", "")}<small>${p.price.includes("/mo") ? " /mo" : ""}</small></div>
+        <div class="pq">${p.dailyCalls ? p.dailyCalls.toLocaleString() + " API calls / day" : "custom quota · SLA · integrations"}</div>
+        <ul>${p.includes.map(i => `<li>${i}</li>`).join("")}</ul>
+        ${current ? `<button disabled>Current plan</button>`
+          : p.id === "free" ? `<button onclick="document.getElementById('pricing').classList.remove('open')">Included free</button>`
+          : `<a href="${mail}" style="text-decoration:none;display:block"><button class="primary" style="width:100%">Activate ${p.label}</button></a>`}
+      </div>`;
+    }).join("");
+  } catch (e) { $("plans-grid").innerHTML = `<div class="sub">${e.message}</div>`; }
+}
+pricing.addEventListener("click", e => { if (e.target === pricing) pricing.classList.remove("open"); });
+$("plans-btn").addEventListener("click", openPricing);
+$("plans-open-2")?.addEventListener("click", openPricing);
+addEventListener("keydown", e => { if (e.key === "Escape") pricing.classList.remove("open"); });
+
+// ---------- intelligence console ----------
+let tlType = "";
+const TL_TYPES = ["", "conjunction", "maneuver", "anomaly", "risk", "reentry", "environment", "congestion"];
+async function loadIntel() {
+  try {
+    const s = await api("/api/archive/stats");
+    countUp($("moat-total"), s.totalEvents);
+    $("moat-types").innerHTML = Object.entries(s.byType).sort((a, b) => b[1] - a[1])
+      .map(([t, c]) => `<span class="moat-type">${t} <b>${c.toLocaleString()}</b></span>`).join("");
+    $("moat-since").textContent = s.oldest
+      ? `Archiving continuously since ${new Date(s.oldest).toUTCString().slice(0, 16)}. Every event is timestamped at detection — this history cannot be reconstructed from public data later.`
+      : "Archive warming up — first sweep runs shortly after boot.";
+  } catch { /* stats are public; transient */ }
+  if (!spaceWx) loadSpaceWeather(); else renderEnvCard();
+  loadRiskCard(); loadReportCard(); loadTimeline(); wireIntelExports();
+}
+
+const COMP_LABELS = { conjunctionPressure: "Conjunctions", shellCongestion: "Shell congestion", decayExposure: "Decay exposure", elementStaleness: "Data staleness" };
+function gaugeTo(val, grade) {
+  const L = 292 * Math.min(100, Math.max(0, val)) / 100;
+  requestAnimationFrame(() => $("gauge-arc").setAttribute("stroke-dasharray", `${L.toFixed(1)} 390`));
+  $("gauge-num").textContent = val;
+  $("gauge-grade").textContent = "GRADE " + grade;
+}
+function spark(cv, vals) {
+  if (!vals || vals.length < 2) { cv.style.display = "none"; return; }
+  cv.style.display = "";
+  const dpr = Math.min(devicePixelRatio, 2), w = cv.clientWidth || 320, h = 46;
+  cv.width = w * dpr; cv.height = h * dpr; cv.style.height = h + "px";
+  const g = cv.getContext("2d"); g.scale(dpr, dpr);
+  const mn = Math.min(...vals), mx = Math.max(...vals), sp = mx - mn || 1;
+  g.strokeStyle = "#f5b944"; g.lineWidth = 1.6; g.beginPath();
+  vals.forEach((v, i) => {
+    const x = 2 + (i / (vals.length - 1)) * (w - 4), y = h - 6 - ((v - mn) / sp) * (h - 14);
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.stroke();
+  g.fillStyle = "#5a6a8a"; g.font = "9px IBM Plex Mono, monospace";
+  g.fillText(`risk history · ${vals.length} sweeps`, 2, 9);
+}
+async function loadRiskCard() {
+  const card = $("risk-card"); clearLock(card);
+  if (!wsKey || !wsOrg) {
+    return setLock(card, "operator", wsKey
+      ? "Bind your workspace to an organization to score its fleet."
+      : "Connect a workspace bound to your organization to score the fleet.");
+  }
+  try {
+    const d = await apiAuth(`/api/intel/fleet-risk?org=${wsOrg}`);
+    $("risk-org-label").textContent = `${orgNames[wsOrg] || wsOrg} · ${d.fleetSize} objects`;
+    gaugeTo(d.index, d.grade);
+    $("gauge-comps").innerHTML = Object.entries(d.components).map(([k, v]) => `
+      <div class="gc-row"><span>${COMP_LABELS[k] || k}</span>
+      <span class="gc-bar"><i data-w="${Math.min(100, v)}"></i></span><b>${v}</b></div>`).join("");
+    requestAnimationFrame(() => $("gauge-comps").querySelectorAll("i[data-w]").forEach(i => i.style.width = i.dataset.w + "%"));
+    const h = await apiAuth(`/api/archive/risk-history?org=${wsOrg}`);
+    spark($("risk-spark"), h.series.map(p => p.index));
+  } catch (e) {
+    if (isPlanErr(e)) setLock(card, "operator");
+    else $("risk-org-label").textContent = e.message;
+  }
+}
+function mdLite(md) {
+  return md.split("\n").map(l => {
+    if (l.startsWith("# ")) return `<h1>${l.slice(2)}</h1>`;
+    if (l.startsWith("## ")) return `<h2>${l.slice(3)}</h2>`;
+    if (l.startsWith("- ")) return `<li>${l.slice(2)}</li>`;
+    if (l.startsWith("*") && l.endsWith("*") && l.length > 2) return `<em>${l.replaceAll("*", "")}</em>`;
+    return l.trim() ? `<div>${l}</div>` : "";
+  }).join("");
+}
+async function loadReportCard() {
+  const card = $("report-card"); clearLock(card);
+  $("share-row").style.display = "none";
+  if (!wsKey || !wsOrg) {
+    $("report-body").innerHTML = `<div style="color:var(--text-faint);font-size:12px">A Monday-morning brief for your fleet: closest approaches with collision probability, maneuvers, anomalies and risk trend — generated from the archive, shareable as a public branded link.</div>`;
+    return setLock(card, "operator", "Weekly Fleet Intelligence is generated from your organization's archived events.");
+  }
+  try {
+    const d = await apiAuth(`/api/archive/report?org=${wsOrg}`);
+    $("report-period").textContent = "last 7 days · live";
+    $("report-body").innerHTML = mdLite(d.markdown);
+    $("share-row").style.display = "";
+  } catch (e) {
+    if (isPlanErr(e)) setLock(card, "operator");
+    else $("report-body").innerHTML = `<div class="sub">${e.message}</div>`;
+  }
+}
+$("report-share").addEventListener("click", async () => {
+  const b = $("report-share"); b.disabled = true;
+  try {
+    const d = await apiAuth("/api/reports/share", { method: "POST", body: "{}" });
+    const url = location.origin + d.url;
+    $("share-url").value = url;
+    try { await navigator.clipboard.writeText(url); toast("Public report link copied — branded, live, safe to forward", "ok", 6000); }
+    catch { toast("Share link created", "ok"); }
+  } catch (e) { toast("Share failed: " + e.message, "err"); }
+  b.disabled = false;
+});
+function tlRow(r) {
+  const t = new Date(r.t);
+  let main = `<b>${r.type}</b>`, extra = "";
+  if (r.type === "conjunction") {
+    main = `<b>${r.aName} ⇄ ${r.bName}</b><div class="sub">${r.missKm} km miss${r.pcText ? ` · Pc ${r.pcText}` : ""} · ${r.risk || ""}</div>`;
+    if (r.aId) extra = ` data-pair-a="${r.aId}" data-pair-b="${r.bId}"`;
+  } else if (r.type === "maneuver") main = `<b>${r.name}</b><div class="sub">${r.kind || ""} · Δalt ${r.dAltKm} km · ${r.confidence || ""}</div>`;
+  else if (r.type === "anomaly") main = `<b>${r.name}</b><div class="sub">pattern-of-life z=${r.zScore} · ${r.severity || ""}</div>`;
+  else if (r.type === "risk") main = `<b>${orgNames[r.org] || r.org}</b><div class="sub">Fleet Risk ${r.index} · grade ${r.grade}</div>`;
+  else if (r.type === "environment") main = `<b>Kp ${r.kp}</b><div class="sub">${r.storm} · aurora boundary ${r.auroraLat}°${r.sampled ? " · sample" : ""}</div>`;
+  else if (r.type === "reentry") main = `<b>${r.name}</b><div class="sub">perigee ${r.perigeeKm} km · ${r.class}${r.lifetimeDays ? ` · ≈${r.lifetimeDays} d` : ""}</div>`;
+  else if (r.type === "congestion") main = `<b>Congestion snapshot</b><div class="sub">${(r.totalLeo || 0).toLocaleString()} objects across LEO shells</div>`;
+  return `<div class="tl-item${extra ? " clickable" : ""}"${extra}>
+    <span class="tl-dot ${r.type}"></span><span class="tl-main">${main}</span>
+    <span class="tl-t">${t.toISOString().slice(5, 16).replace("T", " ")}</span></div>`;
+}
+async function loadTimeline() {
+  $("tl-filters").innerHTML = TL_TYPES.map(t =>
+    `<button class="tl-chip${t === tlType ? " on" : ""}" data-t="${t}">${t || "all"}</button>`).join("");
+  $("tl-filters").querySelectorAll("[data-t]").forEach(n => n.addEventListener("click", () => { tlType = n.dataset.t; loadTimeline(); }));
+  const card = $("timeline-card"); clearLock(card);
+  if (!wsKey) return setLock(card, "operator", "Query the entire detection archive — every conjunction, maneuver, anomaly and storm since the platform began recording.");
+  try {
+    const d = await apiAuth(`/api/archive/events?limit=80${tlType ? "&type=" + tlType : ""}`);
+    $("tl-meta").textContent = `${d.ledgerSize.toLocaleString()} archived · showing ${d.count}`;
+    $("timeline").innerHTML = d.events.map(tlRow).join("") ||
+      `<div class="item"><span class="sub">No events of this type yet — the archive grows with every sweep.</span></div>`;
+    $("timeline").querySelectorAll("[data-pair-a]").forEach(n => n.addEventListener("click", () => {
+      switchView("ops"); pairPinned = true; setPairFocus(n.dataset.pairA, n.dataset.pairB, true);
+      toast("Conjunction pinned on the globe — click any conjunction item to release", "info", 4000);
+    }));
+  } catch (e) { if (isPlanErr(e)) setLock(card, "operator"); }
+}
+function wireIntelExports() {
+  const fleet = $("dl-fleet"), led = $("dl-ledger");
+  if (wsKey && wsOrg) fleet.href = `/api/export/fleet.csv?org=${wsOrg}&apiKey=${wsKey}`; else fleet.removeAttribute("href");
+  if (wsKey) led.href = `/api/export/ledger.csv?apiKey=${wsKey}`; else led.removeAttribute("href");
+  for (const a of [fleet, led]) a.onclick = a.getAttribute("href") ? null : e => { e.preventDefault(); openPricing(); };
+}
+
+// ---------- ground network contact planner ----------
+let stationList = null, stationDots = [];
+async function ensureStations() {
+  if (stationList) return stationList;
+  const d = await api("/api/network/stations");
+  stationList = d.stations;
+  for (const st of stationList) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0x67e8f9 }));
+    m.position.copy(llToScene(st.lat, st.lon, 1.006));
+    m.visible = false; earthGroup.add(m); stationDots.push(m);
+  }
+  return stationList;
+}
+const showStationDots = on => stationDots.forEach(m => m.visible = on);
+$("cp-run").addEventListener("click", async () => {
+  const q = $("cp-sat").value.trim().toUpperCase();
+  let s = null;
+  if (q) s = sats.find(x => String(x.id) === q) || sats.find(x => x.name.toUpperCase().includes(q));
+  if (!s) s = selectedSat;
+  if (!s) return toast("Type a satellite name/ID or select one on the globe first", "err");
+  const btn = $("cp-run"); btn.disabled = true; btn.textContent = "Planning…";
+  try {
+    await ensureStations();
+    const d = await apiAuth(`/api/network/contact-plan?satId=${s.id}&hours=${$("cp-hours").value}`);
+    showStationDots(true);
+    const t0 = Date.now(), span = d.windowHours * 3600000;
+    const strip = ps => ps.map(p => {
+      const l = Math.max(0, (new Date(p.aos) - t0) / span * 100);
+      const w = Math.max(0.6, (new Date(p.los) - new Date(p.aos)) / span * 100);
+      return `<i style="left:${l.toFixed(2)}%;width:${w.toFixed(2)}%" title="${p.stationName} · ${new Date(p.aos).toUTCString().slice(17, 25)}Z · ${p.durationMin} min · max ${p.maxEl}°"></i>`;
+    }).join("");
+    $("cp-result").innerHTML = `
+      <div class="cp-summary">
+        <div class="cp-cell"><div class="v">${d.summary.totalPasses}</div><div class="l">passes / ${d.windowHours} h</div></div>
+        <div class="cp-cell"><div class="v">${(d.summary.totalContactMin / 60).toFixed(1)} h</div><div class="l">total contact</div></div>
+        <div class="cp-cell"><div class="v">${d.summary.contactPct}%</div><div class="l">coverage</div></div>
+        <div class="cp-cell"><div class="v">${fmtDur(d.summary.longestGapMin)}</div><div class="l">longest blackout</div></div>
+      </div>
+      <div class="sub" style="color:var(--text-dim);font-size:11px;margin-bottom:6px"><b>${d.satName}</b> · next ${d.windowHours} h · stations lit on the globe · hover a bar for details</div>
+      ${d.perStation.map(st => `
+        <div class="cp-station" data-lat="${st.lat}" data-lon="${st.lon}">
+          <span class="nm">${st.name}</span>
+          <span class="cp-strip">${strip(d.passes.filter(p => p.station === st.station))}</span>
+          <span class="mins">${st.contactMin} min</span>
+        </div>`).join("")}`;
+    $("cp-result").querySelectorAll(".cp-station").forEach(row => {
+      row.addEventListener("mouseenter", () => setBeaconAt(+row.dataset.lat, +row.dataset.lon, true));
+      row.addEventListener("mouseleave", () => clearBeacon());
+    });
+    toast(`${d.summary.totalPasses} contacts scheduled · ${d.summary.contactPct}% coverage`, "ok");
+  } catch (e) {
+    if (isPlanErr(e)) $("cp-result").innerHTML = `
+      <div class="item MODERATE"><b>Tracker plan feature</b>
+      <div class="sub">Multi-station contact planning across the global network is part of the Tracker tier ($9/mo).</div>
+      <div style="margin-top:8px"><button class="primary" style="width:auto;padding:6px 16px" id="cp-upgrade">View plans</button></div></div>`;
+    else if (/401/.test(e.message) || /API key/i.test(e.message)) $("cp-result").innerHTML = `
+      <div class="item MODERATE"><b>Workspace required</b><div class="sub">Create or connect a workspace (left panel) — the free Observer key works for trying the API; contact planning needs Tracker.</div></div>`;
+    else $("cp-result").innerHTML = `<div class="item CRITICAL"><span class="sub">${e.message}</span></div>`;
+    $("cp-upgrade")?.addEventListener("click", openPricing);
+  }
+  btn.disabled = false; btn.textContent = "Plan contacts";
+});
+function setBeaconAt(lat, lon, fly = false) {
+  beaconLocal = llToScene(lat, lon, 1.01);
+  beaconT0 = performance.now();
+  beacons.forEach(b => { b.visible = true; b.position.copy(beaconLocal); });
+  if (fly) flyToWorld(earthGroup.localToWorld(beaconLocal.clone()), 12.5);
+}
+
+// ---------- v7 boot ----------
+loadSpaceWeather();
+setInterval(loadSpaceWeather, 15 * 60 * 1000);
