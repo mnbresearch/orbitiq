@@ -1078,6 +1078,7 @@ function paletteActions() {
     { k: "Action", label: "Toggle debris visibility", run: () => { const f = $("typefilter"); f.value = f.value === "DEBRIS" ? "all" : "DEBRIS"; f.dispatchEvent(new Event("change")); } },
     { k: "Action", label: "Download catalog CSV", run: () => location.href = "/api/export/catalog.csv" },
     { k: "Action", label: "View subscription plans", run: () => openPricing() },
+    { k: "Action", label: "Open system status page", run: () => window.open("/status.html", "_blank") },
     { k: "Action", label: "Plan ground station contacts", run: () => { switchView("tools"); $("cp-sat").focus(); } },
     { k: "Action", label: "Back to real time", run: () => $("tm-live").click() }
   ];
@@ -1448,6 +1449,7 @@ async function loadIntel() {
   } catch { /* stats are public; transient */ }
   if (!spaceWx) loadSpaceWeather(); else renderEnvCard();
   loadRiskCard(); loadReportCard(); loadTimeline(); wireIntelExports();
+  loadTrends(); loadConstellation();
 }
 
 const COMP_LABELS = { conjunctionPressure: "Conjunctions", shellCongestion: "Shell congestion", decayExposure: "Decay exposure", elementStaleness: "Data staleness" };
@@ -1642,6 +1644,112 @@ function setBeaconAt(lat, lon, fly = false) {
   if (fly) flyToWorld(earthGroup.localToWorld(beaconLocal.clone()), 12.5);
 }
 
-// ---------- v7 boot ----------
+// ============================================================
+// v8 — archive trends, constellation architecture, key rotation
+// ============================================================
+async function loadTrends() {
+  const card = $("trends-card"); if (!card) return;
+  clearLock(card);
+  if (!wsKey) return setLock(card, "operator", "Daily aggregates from the detection archive — conjunction tempo, risk evolution and space-weather correlation.");
+  try {
+    const d = await apiAuth(`/api/archive/trends${wsOrg ? "?org=" + wsOrg : ""}`);
+    $("trends-meta").textContent = `${d.series.length} days${d.org ? " · " + (orgNames[d.org] || d.org) : " · global"}`;
+    drawTrends($("ch-trends"), d.series);
+  } catch (e) { if (isPlanErr(e)) setLock(card, "operator"); }
+}
+function drawTrends(cv, series) {
+  const dpr = Math.min(devicePixelRatio, 2);
+  const w = cv.clientWidth || cv.parentElement.clientWidth - 36, h = +cv.getAttribute("height");
+  cv.width = w * dpr; cv.height = h * dpr; cv.style.height = h + "px";
+  const g = cv.getContext("2d"); g.scale(dpr, dpr);
+  if (!series.length) {
+    g.fillStyle = "#5a6a8a"; g.font = "12px Inter";
+    g.fillText("Archive warming up — trends appear as sweeps accumulate.", 12, h / 2);
+    return;
+  }
+  const n = series.length, bw = (w - 34) / n;
+  const maxC = Math.max(...series.map(s => s.conjunctions), 1);
+  // conjunction bars
+  for (let i = 0; i < n; i++) {
+    const bh = (series[i].conjunctions / maxC) * (h - 52);
+    const x = 26 + i * bw, y = h - 26 - bh;
+    const grad = g.createLinearGradient(0, y, 0, h - 26);
+    grad.addColorStop(0, "#38bdf8"); grad.addColorStop(1, "#38bdf822");
+    g.fillStyle = grad;
+    g.beginPath(); g.roundRect(x + 1, y, Math.max(2, bw - 3), Math.max(bh, 1), 2); g.fill();
+  }
+  const line = (get, color, maxV) => {
+    g.strokeStyle = color; g.lineWidth = 1.6; g.beginPath();
+    let started = false;
+    for (let i = 0; i < n; i++) {
+      const v = get(series[i]);
+      if (v === null || v === undefined) continue;
+      const x = 26 + i * bw + bw / 2, y = h - 26 - (v / maxV) * (h - 52);
+      started ? g.lineTo(x, y) : g.moveTo(x, y); started = true;
+    }
+    g.stroke();
+  };
+  line(s => s.riskIndex, "#f5b944", 100);
+  line(s => s.kpMax, "#67e8f9", 9);
+  g.strokeStyle = "rgba(90,130,200,0.25)";
+  g.beginPath(); g.moveTo(22, h - 26); g.lineTo(w - 6, h - 26); g.stroke();
+  g.fillStyle = "#5a6a8a"; g.font = "9px IBM Plex Mono, monospace"; g.textAlign = "center";
+  g.fillText(series[0].date.slice(5), 40, h - 10);
+  g.fillText(series[n - 1].date.slice(5), w - 40, h - 10);
+}
+
+async function loadConstellation() {
+  const card = $("const-card"); if (!card) return;
+  clearLock(card);
+  if (!wsKey || !wsOrg) {
+    $("const-body").innerHTML = `<div style="color:var(--text-faint);font-size:12px">Altitude shells, orbital-plane occupancy and inclination families — your fleet's architecture, derived live from GP elements.</div>`;
+    return setLock(card, "operator", "Bind a workspace to an organization to analyze its constellation.");
+  }
+  try {
+    const d = await apiAuth(`/api/intel/constellation?org=${wsOrg}`);
+    if (d.error) { $("const-body").innerHTML = `<div class="sub">${d.error}</div>`; return; }
+    $("const-meta").textContent = orgNames[d.org] || d.org;
+    const maxShell = Math.max(...d.altitude.topShells.map(s => s.count), 1);
+    const maxRaan = Math.max(...d.planes.raanBins, 1);
+    $("const-body").innerHTML = `
+      <div class="env-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="env-cell"><div class="v">${d.payloads}</div><div class="l">payloads</div></div>
+        <div class="env-cell"><div class="v">${d.planes.occupiedRaanBins15deg}</div><div class="l">RAAN planes (15°)</div></div>
+        <div class="env-cell"><div class="v">${d.altitude.medianKm}</div><div class="l">median alt km</div></div>
+        <div class="env-cell"><div class="v">${d.elementAgeDays.median}d</div><div class="l">median TLE age</div></div>
+      </div>
+      <div class="sub" style="color:var(--text-dim);font-size:10.5px;margin:4px 0 4px">RAAN plane occupancy · 0–360°</div>
+      <div style="display:flex;gap:2px;align-items:flex-end;height:34px">
+        ${d.planes.raanBins.map(c => `<i style="flex:1;background:${c ? "#38bdf8" : "#14203a"};opacity:${c ? 0.35 + 0.65 * (c / maxRaan) : 1};height:${c ? Math.max(15, (c / maxRaan) * 100) : 8}%;border-radius:2px"></i>`).join("")}
+      </div>
+      <div class="sub" style="color:var(--text-dim);font-size:10.5px;margin:10px 0 4px">Top altitude shells</div>
+      ${d.altitude.topShells.map(s => `
+        <div class="gc-row" style="grid-template-columns:74px 1fr 40px">
+          <span>${s.altKm} km</span>
+          <span class="gc-bar"><i style="width:${(s.count / maxShell * 100).toFixed(0)}%"></i></span>
+          <b>${s.count}</b>
+        </div>`).join("")}
+      <div class="moat-types" style="margin-top:10px">
+        ${d.inclinationGroups.map(gp => `<span class="moat-type">${gp.inclDeg}° <b>${gp.count}</b></span>`).join("")}
+        ${d.lowPerigeeCount ? `<span class="moat-type" style="color:#f26d78">low perigee <b>${d.lowPerigeeCount}</b></span>` : ""}
+      </div>`;
+  } catch (e) { if (isPlanErr(e)) setLock(card, "operator"); }
+}
+
+// ---------- key rotation ----------
+$("ws-rotate")?.addEventListener("click", async () => {
+  if (!wsKey) return toast("Connect a workspace first", "err");
+  if (!confirm("Rotate the API key? The current key stops working immediately — update any integrations.")) return;
+  try {
+    const d = await apiAuth("/api/workspace/rotate-key", { method: "POST", body: "{}" });
+    wsKey = d.apiKey;
+    localStorage.setItem("orbitiq-apikey", wsKey);
+    try { await navigator.clipboard.writeText(wsKey); toast("New key minted and copied — old key is dead", "ok", 8000); }
+    catch { toast("New key minted: " + wsKey, "info", 15000); }
+    refreshWorkspaceUI();
+  } catch (e) { toast("Rotation failed: " + e.message, "err"); }
+});
+
+// ---------- v7/v8 boot ----------
 loadSpaceWeather();
 setInterval(loadSpaceWeather, 15 * 60 * 1000);
