@@ -1,0 +1,78 @@
+# ============================================================
+# OrbitIQ data mirror — the autonomous data pipeline.
+# CelesTrak and NOAA block many datacenter IPs (including our
+# host), but GitHub Actions runners can reach them. Every 6 h
+# this fetches fresh orbital + space-weather data and force-
+# pushes it to a flat `data-mirror` branch, where the server
+# reads it via raw.githubusercontent.com.
+# Production runs on real live data, for free, forever.
+# ============================================================
+name: Data mirror
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"   # every 6 hours
+  workflow_dispatch: {}       # manual "Run workflow" button
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch public data sources
+        run: |
+          mkdir -p out/data/live
+          ok=0
+          for g in active cosmos-1408-debris iridium-33-debris; do
+            if curl -sfL --retry 3 --retry-delay 10 --max-time 180 \
+                 -A "OrbitIQ-mirror/1.0 (github.com/${{ github.repository }})" \
+                 "https://celestrak.org/NORAD/elements/gp.php?GROUP=$g&FORMAT=json" \
+                 -o "out/data/live/$g.json"; then
+              echo "fetched $g: $(wc -c < out/data/live/$g.json) bytes"
+              ok=1
+            else
+              echo "::warning::failed to fetch group $g"
+            fi
+          done
+          curl -sfL --max-time 60 "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json" \
+            -o out/data/live/kp.json || echo "::warning::kp fetch failed"
+          curl -sfL --max-time 60 "https://services.swpc.noaa.gov/products/summary/10cm-flux.json" \
+            -o out/data/live/f107.json || echo "::warning::f107 fetch failed"
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > out/data/live/updated.txt
+          [ "$ok" = "1" ] || { echo "::error::no orbital data fetched"; exit 1; }
+
+      - name: Validate payloads (drop anything malformed)
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          d = "out/data/live"
+          for f in list(os.listdir(d)):
+              p = os.path.join(d, f)
+              if not f.endswith(".json"):
+                  continue
+              try:
+                  data = json.load(open(p))
+                  if f in ("active.json",) and (not isinstance(data, list) or len(data) < 1000):
+                      raise ValueError(f"suspiciously small catalog: {len(data) if isinstance(data, list) else type(data)}")
+                  if f.endswith("-debris.json") and not isinstance(data, list):
+                      raise ValueError("not a list")
+                  print(f"ok {f}: {len(data) if isinstance(data, list) else 'obj'}")
+              except Exception as e:
+                  print(f"::warning::dropping invalid {f}: {e}")
+                  os.remove(p)
+          sys.exit(0)
+          EOF
+
+      - name: Publish to data-mirror branch (flat history, no repo bloat)
+        run: |
+          cd out
+          git init -b data-mirror
+          git config user.name "orbitiq-mirror"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "data mirror $(date -u +%FT%TZ)"
+          git push --force \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            data-mirror
