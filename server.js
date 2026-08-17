@@ -90,8 +90,12 @@ function perigeeOf(s) {
 }
 function capForScreening(sats, org) {
   if (sats.length <= SWEEP_CAP) return sats;
-  // always keep the org's own objects, fill the rest with lowest perigee
-  const mine = org ? sats.filter(s => s.org === org) : [];
+  // keep the org's own objects — but the cap applies to them too (a mega-
+  // constellation like Starlink would otherwise blow the CPU budget) —
+  // then fill the remainder with the lowest-perigee objects
+  const mine = org
+    ? sats.filter(s => s.org === org).slice(0, Math.floor(SWEEP_CAP * 0.7))
+    : [];
   const rest = (org ? sats.filter(s => s.org !== org) : sats)
     .map(s => [perigeeOf(s), s])
     .sort((a, b) => a[0] - b[0])
