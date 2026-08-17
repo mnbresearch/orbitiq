@@ -77,11 +77,33 @@ const requirePro = (req, res, next) =>
 // ---------- caches ----------
 const conjCache = new Map();
 const CONJ_TTL = 15 * 60 * 1000;
+// With the live catalog (~16k objects) an unbounded screen blocks the event
+// loop for minutes on a small instance. Cap the screening population,
+// prioritizing the lowest-perigee objects — the congested regime where the
+// collision risk actually lives. Override with ORBITIQ_SWEEP_CAP.
+const SWEEP_CAP = parseInt(process.env.ORBITIQ_SWEEP_CAP || "6000", 10);
+const MU_E = 398600.4418, RE_KM = 6371;
+function perigeeOf(s) {
+  const nRad = (s.meanMotion * 2 * Math.PI) / 86400;
+  if (!nRad) return 1e9;
+  return Math.cbrt(MU_E / (nRad * nRad)) * (1 - (s.ecc || 0)) - RE_KM;
+}
+function capForScreening(sats, org) {
+  if (sats.length <= SWEEP_CAP) return sats;
+  // always keep the org's own objects, fill the rest with lowest perigee
+  const mine = org ? sats.filter(s => s.org === org) : [];
+  const rest = (org ? sats.filter(s => s.org !== org) : sats)
+    .map(s => [perigeeOf(s), s])
+    .sort((a, b) => a[0] - b[0])
+    .slice(0, Math.max(0, SWEEP_CAP - mine.length))
+    .map(p => p[1]);
+  return mine.concat(rest);
+}
 async function runScreening(org, hours, thresholdKm) {
   const key = `${org}|${hours}|${thresholdKm}`;
   const hit = conjCache.get(key);
   if (hit && Date.now() - hit.at < CONJ_TTL) return { ...hit.result, cached: true };
-  const sats = await getSatellites();
+  const sats = capForScreening(await getSatellites(), org);
   const result = screenConjunctions(sats, org, hours, thresholdKm);
   conjCache.set(key, { at: Date.now(), result });
   return result;
@@ -722,13 +744,15 @@ async function intelligenceSweep() {
     ledger.append("anomaly", (intel.anomalies(sats, hist).flags || []).map(a => ({
       org: a.org, id: a.id, name: a.name, zScore: a.zScore, severity: a.severity
     })));
-    // 3. fleet risk for every significant operator
+    // 3. fleet risk for the most significant operators (bounded + yielding,
+    //    so a big live catalog can't starve the event loop)
     const cong = congestion(sats);
-    const orgs = orgList(sats).filter(o => o.count >= 20 && o.id !== "other").slice(0, 8);
+    const orgs = orgList(sats).filter(o => o.count >= 20 && o.id !== "other").slice(0, 4);
     for (const o of orgs) {
       const dr = await runScreening(o.id, 3, 10);
       const r = intel.fleetRisk(o.id, sats, dr.events, cong.shells);
       if (!r.error) ledger.append("risk", [{ org: o.id, index: r.index, grade: r.grade, components: r.components, fleetSize: r.fleetSize }]);
+      await new Promise(res => setTimeout(res, 1500)); // breathe between screens
     }
     // 4. congestion snapshot
     ledger.append("congestion", [{ org: null, mostCongested: cong.mostCongested, totalLeo: cong.shells.reduce((s, x) => s + x.count, 0) }]);
@@ -751,8 +775,9 @@ process.on("SIGTERM", async () => { try { await backup.backup(); } finally { pro
 setInterval(scanAllWorkspaces, 30 * 60 * 1000);
 setInterval(snapshotPopulation, 6 * 60 * 60 * 1000);
 setInterval(intelligenceSweep, 6 * 60 * 60 * 1000);
-setTimeout(snapshotPopulation, 10 * 1000);
-setTimeout(intelligenceSweep, 25 * 1000);
+// stagger heavy boot work so the instance passes health checks first
+setTimeout(snapshotPopulation, 90 * 1000);
+setTimeout(intelligenceSweep, 5 * 60 * 1000);
 
 // bootstrap the admin workspace
 const { admin, created } = store.ensureAdmin(process.env.ORBITIQ_ADMIN_KEY || null);
