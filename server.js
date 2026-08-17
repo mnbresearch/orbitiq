@@ -14,6 +14,8 @@ import { hohmann, launchPlan, congestion, detectManeuvers, LAUNCH_SITES } from "
 import * as intel from "./src/intel.js";
 import * as ledger from "./src/ledger.js";
 import * as store from "./src/store.js";
+import * as netops from "./src/netops.js";
+import { getSpaceWeather, environmentForLedger } from "./src/spaceweather.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -73,7 +75,7 @@ async function runScreening(org, hours, thresholdKm) {
 }
 
 // ---------- core data ----------
-api.get("/health", (req, res) => res.json({ ok: true, service: "OrbitIQ", version: 3, time: new Date().toISOString() }));
+api.get("/health", (req, res) => res.json({ ok: true, service: "OrbitIQ", version: 7, time: new Date().toISOString() }));
 
 api.get("/satellites", async (req, res) => {
   try {
@@ -398,6 +400,73 @@ api.get("/archive/report", requirePlan("operator"), async (req, res) => {
   } catch (e) { res.status(500).json({ error: "Report generation failed", detail: e.message }); }
 });
 
+// ---------- v7: space environment ----------
+api.get("/spaceweather", async (req, res) => {
+  try { res.json(await getSpaceWeather()); }
+  catch (e) { res.status(502).json({ error: "Space weather unavailable", detail: e.message }); }
+});
+
+// ---------- v7: ground network operations ----------
+api.get("/network/stations", (req, res) => res.json(netops.stationsPublic()));
+
+api.get("/network/contact-plan", requirePlan("tracker"), async (req, res) => {
+  try {
+    const sats = await getSatellites();
+    const s = sats.find(x => String(x.id) === String(req.query.satId));
+    if (!s) return res.status(404).json({ error: "Satellite not found" });
+    const hours = Math.min(Math.max(parseFloat(req.query.hours) || 24, 1), 48);
+    const minEl = Math.min(Math.max(parseFloat(req.query.minEl) || 5, 0), 30);
+    res.json(netops.contactPlan(s, hours, minEl));
+  } catch (e) { res.status(500).json({ error: "Contact planning failed", detail: e.message }); }
+});
+
+// ---------- v7: re-entry board (public teaser, Tracker for full) ----------
+api.get("/reentry", async (req, res) => {
+  try {
+    const rank = req.workspace ? (store.PLANS[req.workspace.plan]?.rank ?? 0) : -1;
+    const full = !!req.workspace && (rank >= 1 || req.workspace.role === "admin");
+    const d = netops.reentryWatch(await getSatellites(), full ? 100 : 12);
+    res.json({ ...d, tier: full ? "full" : "teaser — top 12; Tracker plan unlocks the full board" });
+  } catch (e) { res.status(502).json({ error: "Orbital data source unavailable", detail: e.message }); }
+});
+
+// ---------- v7: premium exports + shareable reports ----------
+const csvq = v => JSON.stringify(String(v ?? ""));
+api.get("/export/fleet.csv", requirePlan("operator"), async (req, res) => {
+  try {
+    const org = req.query.org || req.workspace?.org;
+    if (!org) return res.status(400).json({ error: "org required (or bind your workspace to one)" });
+    const sats = (await getSatellites()).filter(s => s.org === org);
+    const rows = sats.map(s => {
+      const r = netops.reentryEstimate(s);
+      return [s.id, csvq(s.name), s.noradType, s.incl, s.meanMotion, s.ecc, r?.perigeeKm ?? "", r?.apogeeKm ?? "", r?.lifetimeDays ?? "", s.epoch].join(",");
+    });
+    res.type("text/csv").attachment(`orbitiq-fleet-${org}.csv`)
+      .send("norad_id,name,type,incl_deg,mean_motion_rev_day,ecc,perigee_km,apogee_km,lifetime_days_proj,epoch\n" + rows.join("\n"));
+  } catch (e) { res.status(502).json({ error: "Export failed", detail: e.message }); }
+});
+
+api.get("/export/ledger.csv", requirePlan("operator"), (req, res) => {
+  const d = ledger.query({ type: req.query.type, org: req.query.org, limit: 2000 });
+  const rows = d.events.map(r => [
+    r.t, r.type, r.org ?? r.aOrg ?? "",
+    csvq(r.name || (r.aName ? `${r.aName} x ${r.bName}` : r.type)),
+    r.missKm ?? "", r.pcText ?? "", r.index ?? "", r.kp ?? ""
+  ].join(","));
+  res.type("text/csv").attachment("orbitiq-ledger.csv")
+    .send("time,type,org,summary,miss_km,pc,risk_index,kp\n" + rows.join("\n"));
+});
+
+api.post("/reports/share", requirePlan("operator"), async (req, res) => {
+  try {
+    const org = (req.body?.org && req.workspace.role === "admin") ? req.body.org : req.workspace.org;
+    if (!org) return res.status(400).json({ error: "Bind your workspace to an organization first" });
+    const orgName = orgList(await getSatellites()).find(o => o.id === org)?.name || org;
+    const token = store.createShare(org, orgName, req.workspace.id);
+    res.status(201).json({ token, url: `/r/${token}`, note: "Public read-only link to this org's live weekly intelligence report." });
+  } catch (e) { res.status(500).json({ error: "Share failed", detail: e.message }); }
+});
+
 // ---------- admin ----------
 api.get("/admin/overview", requireAdmin, async (req, res) => {
   let catalog = 0;
@@ -448,6 +517,45 @@ api.get("/export/conjunctions.csv", async (req, res) => {
 
 app.use("/api", api);
 app.use("/api/v1", api);
+
+// ---------- public shareable report page (token is the secret) ----------
+app.get("/r/:token", (req, res) => {
+  const share = store.getShare(req.params.token);
+  if (!share) return res.status(404).type("html").send("<body style='background:#070b14;color:#8fa3c8;font-family:sans-serif;display:grid;place-items:center;height:100vh'><div>Report link not found or revoked.</div></body>");
+  const rep = ledger.weeklyReport(share.org, share.orgName);
+  const esc = t => String(t).replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
+  const risk = rep.risk.current;
+  res.type("html").send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Weekly Fleet Intelligence — ${esc(share.orgName)} · OrbitIQ</title>
+<style>
+  body{margin:0;background:#070b14;color:#e6edfa;font:15px/1.6 Inter,system-ui,sans-serif;padding:48px 20px}
+  .wrap{max-width:680px;margin:0 auto}
+  .brand{font-weight:650;letter-spacing:.4px;color:#38bdf8;font-size:13px;text-transform:uppercase}
+  h1{font-size:26px;margin:10px 0 2px}
+  .period{color:#5a6a8a;font-size:13px;margin-bottom:28px}
+  .card{background:#0b1322;border:1px solid #1b2a45;border-radius:12px;padding:20px 22px;margin-bottom:14px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:#8fa3c8;margin:0 0 12px}
+  li{margin-bottom:6px}
+  .nums{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;text-align:center}
+  .n .v{font-size:24px;font-weight:650;color:#38bdf8}.n .l{font-size:11px;color:#5a6a8a}
+  .grade{display:inline-block;padding:2px 10px;border-radius:99px;background:#123;border:1px solid #1b2a45;font-weight:650}
+  .foot{margin-top:30px;color:#5a6a8a;font-size:12.5px;text-align:center}
+  .foot a{color:#38bdf8;text-decoration:none;font-weight:600}
+</style></head><body><div class="wrap">
+  <div class="brand">OrbitIQ · Weekly Fleet Intelligence</div>
+  <h1>${esc(share.orgName)}</h1>
+  <div class="period">${esc(new Date(rep.period.from).toUTCString().slice(0, 16))} → ${esc(new Date(rep.period.to).toUTCString().slice(0, 16))} · generated live from the detection archive</div>
+  <div class="card"><h2>Highlights</h2><ul>${rep.highlights.map(h => `<li>${esc(h)}</li>`).join("")}</ul></div>
+  <div class="card"><h2>This week in numbers</h2><div class="nums">
+    <div class="n"><div class="v">${rep.counts.conjunctions}</div><div class="l">conjunction events</div></div>
+    <div class="n"><div class="v">${rep.counts.maneuvers}</div><div class="l">maneuvers</div></div>
+    <div class="n"><div class="v">${rep.counts.anomalies}</div><div class="l">anomalies</div></div>
+    <div class="n"><div class="v">${risk ? risk.index : "—"}</div><div class="l">risk index ${risk ? `<span class="grade">${esc(risk.grade)}</span>` : ""}</div></div>
+  </div></div>
+  ${rep.closestApproach ? `<div class="card"><h2>Closest approach</h2>${esc(rep.closestApproach.aName)} ⇄ ${esc(rep.closestApproach.bName)} — <b>${esc(rep.closestApproach.missKm)} km</b>${rep.closestApproach.pcText ? `, Pc ${esc(rep.closestApproach.pcText)}` : ""}<br><span style="color:#5a6a8a;font-size:13px">TCA ${esc(new Date(rep.closestApproach.tca).toUTCString())}</span></div>` : ""}
+  <div class="foot">Screening-grade intelligence computed from public orbital data.<br>Get this for your fleet — <a href="https://${esc(req.get("host") || "orbit.mnbresearch.com")}">OrbitIQ · live space traffic intelligence</a></div>
+</div></body></html>`);
+});
 
 // ---------- WebSocket live push ----------
 const server = http.createServer(app);
@@ -527,6 +635,14 @@ async function intelligenceSweep() {
     }
     // 4. congestion snapshot
     ledger.append("congestion", [{ org: null, mostCongested: cong.mostCongested, totalLeo: cong.shells.reduce((s, x) => s + x.count, 0) }]);
+    // 5. space environment — enables risk ↔ space-weather correlation later
+    try { ledger.append("environment", [await environmentForLedger()]); } catch { /* optional */ }
+    // 6. re-entry board snapshot (top movers only)
+    try {
+      ledger.append("reentry", netops.reentryWatch(sats, 3).objects.map(r => ({
+        org: r.org, id: r.id, name: r.name, perigeeKm: r.perigeeKm, lifetimeDays: r.lifetimeDays, class: r.class
+      })));
+    } catch { /* optional */ }
     console.log(`intelligence sweep archived — ledger now ${ledger.stats().totalEvents} events`);
   } catch (e) { console.error("intelligence sweep failed:", e.message); }
 }
@@ -549,4 +665,4 @@ if (created && !process.env.ORBITIQ_ADMIN_KEY) {
   console.log(`Admin workspace ready (${admin.name})`);
 }
 
-server.listen(PORT, () => console.log(`OrbitIQ v3 listening on http://localhost:${PORT}  (API: /api/v1, WS: /ws)`));
+server.listen(PORT, () => console.log(`OrbitIQ v7 listening on http://localhost:${PORT}  (API: /api/v1, WS: /ws)`));
