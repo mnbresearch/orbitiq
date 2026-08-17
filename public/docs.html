@@ -65,9 +65,30 @@ curl {host}/api/v1/alerts -H "X-API-Key: oiq_…"</pre>
   <div class="ep"><span class="m get">GET</span><span class="path">/alerts</span><span class="auth">X-API-Key</span><div class="d">Alert inbox (deduplicated conjunction events).</div></div>
   <div class="ep"><span class="m post">POST</span><span class="path">/alerts/read</span><span class="auth">X-API-Key</span><div class="d">Mark all alerts read.</div></div>
 
+  <h2>Intel Pack <span class="auth">plan-gated</span></h2>
+  <div class="ep"><span class="m get">GET</span><span class="path">/plans</span><div class="d">Subscription tiers, quotas and inclusions. Public.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/intel/staleness</span> · <span class="path">/intel/gabbard</span><div class="d">Free teasers: element-age distribution, breakup Gabbard series.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/intel/eclipse</span> · <span class="path">/intel/passes-pro</span><span class="auth">Tracker</span><div class="d">Eclipse windows; pro passes with Doppler shift and optical visibility. Params: <code>satId</code>, observer <code>lat/lon</code>, <code>freqMhz</code>.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/intel/conjunctions</span> · <span class="path">/intel/fleet-risk</span> · <span class="path">/intel/launch-correlation</span> · <span class="path">/intel/anomalies</span><span class="auth">Operator</span><div class="d">Pc-augmented screening, Fleet Risk Index with component breakdown, launch-object correlation, pattern-of-life anomaly flags.</div></div>
+
+  <h2>Detection archive <span class="auth">the data moat</span></h2>
+  <div class="ep"><span class="m get">GET</span><span class="path">/archive/stats</span><div class="d">Archive size and event counts by type. Public — watch it grow.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/archive/events</span><span class="auth">Operator</span><div class="d">Query archived detections. Params: <code>type</code> (conjunction, maneuver, anomaly, risk, reentry, environment, congestion), <code>org</code>, <code>since</code>, <code>until</code>, <code>limit</code>.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/archive/risk-history</span><span class="auth">Operator</span><div class="d">Fleet Risk Index time series for an org.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/archive/report</span><span class="auth">Operator</span><div class="d">Weekly Fleet Intelligence report (JSON + markdown).</div></div>
+  <div class="ep"><span class="m post">POST</span><span class="path">/reports/share</span><span class="auth">Operator</span><div class="d">Mint a public, branded, live report link at <code>/r/{token}</code> — safe to forward to execs and insurers.</div></div>
+
+  <h2>Environment &amp; network ops (v7)</h2>
+  <div class="ep"><span class="m get">GET</span><span class="path">/spaceweather</span><div class="d">Live NOAA SWPC Kp index, storm scale, F10.7 flux, drag advisory, aurora boundary. Public.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/reentry</span><div class="d">Re-entry board with lifetime projections and debris-band latitudes. Public teaser (top 12); full board with a Tracker key.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/network/stations</span><div class="d">The 10-station global ground network. Public.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/network/contact-plan</span><span class="auth">Tracker</span><div class="d">Multi-station contact schedule: passes, total contact time, coverage %, longest blackout. Params: <code>satId</code>, <code>hours</code> (≤48), <code>minEl</code>.</div></div>
+
   <h2>Exports</h2>
   <div class="ep"><span class="m get">GET</span><span class="path">/export/catalog.csv</span><div class="d">Catalog as CSV. Param: <code>org</code>.</div></div>
   <div class="ep"><span class="m get">GET</span><span class="path">/export/conjunctions.csv</span><div class="d">Screening results as CSV. Params as <code>/conjunctions</code>.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/export/fleet.csv</span><span class="auth">Operator</span><div class="d">Fleet CSV annotated with perigee/apogee and lifetime projections.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/export/ledger.csv</span><span class="auth">Operator</span><div class="d">The detection archive as CSV — audit-ready, timestamped at detection.</div></div>
 
   <h2>WebSocket</h2>
   <div class="ep"><span class="m get">WS</span><span class="path">/ws</span><div class="d">Live push. Messages: <code>{type:"hello"}</code> on connect, <code>{type:"alerts", payload:{workspaceId, count, top[]}}</code> when background scans find new events.</div></div>
