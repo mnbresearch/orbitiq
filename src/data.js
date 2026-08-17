@@ -14,6 +14,24 @@ fs.mkdirSync(CACHE_DIR, { recursive: true });
 const CELESTRAK = "https://celestrak.org/NORAD/elements/gp.php";
 const LL2 = "https://ll.thespacedevs.com/2.2.0";
 
+// Our own GitHub-hosted mirror, refreshed every 6 h by a scheduled Action
+// (.github/workflows/data-mirror.yml). Datacenter IPs that CelesTrak blocks
+// can still reach raw.githubusercontent.com — so production stays on real data.
+const MIRROR_BASE = process.env.ORBITIQ_MIRROR_BASE ||
+  "https://raw.githubusercontent.com/mnbresearch/orbitiq/data-mirror/data/live";
+
+// which source actually served each dataset (live | mirror | cache | sample)
+const sourceByKey = {};
+export function dataSourceInfo() {
+  const rank = { live: 3, mirror: 2, cache: 1, sample: 0 };
+  let catalog = null;
+  for (const [k, v] of Object.entries(sourceByKey)) {
+    if (!k.startsWith("celestrak-")) continue;
+    if (!catalog || rank[v.source] > rank[catalog.source]) catalog = v;
+  }
+  return { catalog: catalog || { source: "pending" }, perKey: sourceByKey };
+}
+
 // Groups we ingest. "active" alone is ~11k objects; we merge several curated
 // groups so the platform covers constellations, stations, debris and more.
 export const GROUPS = [
@@ -26,26 +44,55 @@ const SAT_TTL_MS = 6 * 60 * 60 * 1000;      // re-fetch orbital data every 6h
 const LAUNCH_TTL_MS = 60 * 60 * 1000;       // launches every 1h
 
 // ---------- generic cached fetch ----------
-async function cachedJson(key, url, ttlMs) {
+async function fetchJson(url, ms = 25000) {
+  const res = await fetch(url, {
+    headers: { "User-Agent": "OrbitIQ/8.0" },
+    signal: AbortSignal.timeout(ms)
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  return res.json();
+}
+
+async function cachedJson(key, url, ttlMs, mirrorUrl = null) {
   const file = path.join(CACHE_DIR, key + ".json");
   try {
     const st = fs.statSync(file);
     if (Date.now() - st.mtimeMs < ttlMs) {
+      sourceByKey[key] = sourceByKey[key] || { source: "cache", at: st.mtimeMs };
       return JSON.parse(fs.readFileSync(file, "utf8"));
     }
   } catch { /* no cache yet */ }
 
+  // 1. primary source
   try {
-    const res = await fetch(url, { headers: { "User-Agent": "OrbitIQ/1.0" } });
-    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-    const json = await res.json();
+    const json = await fetchJson(url);
     fs.writeFileSync(file, JSON.stringify(json));
+    sourceByKey[key] = { source: "live", at: Date.now() };
     return json;
   } catch (err) {
-    // network failed — serve stale cache, then bundled sample data
-    try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* none */ }
+    // 2. our GitHub mirror (kept fresh by the scheduled Action)
+    if (mirrorUrl) {
+      try {
+        const json = await fetchJson(mirrorUrl);
+        if (Array.isArray(json) ? json.length : Object.keys(json).length) {
+          fs.writeFileSync(file, JSON.stringify(json));
+          sourceByKey[key] = { source: "mirror", at: Date.now() };
+          return json;
+        }
+      } catch { /* fall through */ }
+    }
+    // 3. stale cache, 4. bundled sample data
+    try {
+      const j = JSON.parse(fs.readFileSync(file, "utf8"));
+      sourceByKey[key] = { source: "cache", at: 0 };
+      return j;
+    } catch { /* none */ }
     const sample = path.join(DATA_DIR, key + ".sample.json");
-    try { return JSON.parse(fs.readFileSync(sample, "utf8")); } catch { /* none */ }
+    try {
+      const j = JSON.parse(fs.readFileSync(sample, "utf8"));
+      sourceByKey[key] = { source: "sample", at: 0 };
+      return j;
+    } catch { /* none */ }
     throw err;
   }
 }
@@ -99,7 +146,7 @@ export async function getSatellites() {
   for (const g of GROUPS) {
     let rows;
     try {
-      rows = await cachedJson("celestrak-" + g, `${CELESTRAK}?GROUP=${g}&FORMAT=json`, SAT_TTL_MS);
+      rows = await cachedJson("celestrak-" + g, `${CELESTRAK}?GROUP=${g}&FORMAT=json`, SAT_TTL_MS, `${MIRROR_BASE}/${g}.json`);
     } catch { continue; }
     if (!Array.isArray(rows)) continue;
     for (const o of rows) {

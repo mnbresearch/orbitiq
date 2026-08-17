@@ -8,6 +8,10 @@
 
 const KP_URL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json";
 const FLUX_URL = "https://services.swpc.noaa.gov/products/summary/10cm-flux.json";
+const MIRROR_BASE = process.env.ORBITIQ_MIRROR_BASE ||
+  "https://raw.githubusercontent.com/mnbresearch/orbitiq/data-mirror/data/live";
+const KP_MIRROR = `${MIRROR_BASE}/kp.json`;
+const FLUX_MIRROR = `${MIRROR_BASE}/f107.json`;
 const TTL_MS = 30 * 60 * 1000;
 
 let cache = null;
@@ -39,22 +43,30 @@ function dragAdvisory(kp) {
   return "Quiet drag environment — TLE propagation error near baseline.";
 }
 
+async function firstJson(urls) {
+  for (const u of urls) {
+    try { return { json: await fetchJson(u), url: u }; } catch { /* next */ }
+  }
+  return null;
+}
+
 export async function getSpaceWeather() {
   if (cache && Date.now() - cache.at < TTL_MS) return cache.data;
   let kp = null, kpTime = null, f107 = null, source = "NOAA SWPC";
-  try {
-    const rows = await fetchJson(KP_URL);
-    // rows[0] is a header row: ["time_tag","Kp","a_running","station_count"]
-    const last = rows[rows.length - 1];
-    kp = parseFloat(last[1]);
-    kpTime = last[0];
-  } catch { /* fall back below */ }
-  try {
-    const f = await fetchJson(FLUX_URL);
-    f107 = parseFloat(f.Flux);
-  } catch { /* optional */ }
+  const kpHit = await firstJson([KP_URL, KP_MIRROR]);
+  if (kpHit) {
+    try {
+      // rows[0] is a header row: ["time_tag","Kp","a_running","station_count"]
+      const last = kpHit.json[kpHit.json.length - 1];
+      kp = parseFloat(last[1]);
+      kpTime = last[0];
+      if (kpHit.url === KP_MIRROR) source = "NOAA SWPC via mirror";
+    } catch { /* fall back below */ }
+  }
+  const fxHit = await firstJson([FLUX_URL, FLUX_MIRROR]);
+  if (fxHit) { try { f107 = parseFloat(fxHit.json.Flux); } catch { /* optional */ } }
   let sampled = false;
-  if (kp === null || Number.isNaN(kp)) { kp = SAMPLE.kp; f107 = f107 ?? SAMPLE.f107; sampled = true; source = "bundled sample (NOAA unreachable)"; }
+  if (kp === null || Number.isNaN(kp)) { kp = SAMPLE.kp; f107 = f107 ?? SAMPLE.f107; sampled = true; source = "bundled sample (NOAA + mirror unreachable)"; }
   const cls = classify(kp);
   const data = {
     kp: +kp.toFixed(2),

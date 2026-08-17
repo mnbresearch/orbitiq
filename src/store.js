@@ -99,6 +99,15 @@ export function todayCalls(apiKey) {
   const day = new Date().toISOString().slice(0, 10);
   return (db.usage[apiKey] || {})[day] || 0;
 }
+export function rotateKey(id) {
+  const w = db.workspaces[id];
+  if (!w || w.role === "admin") return null; // admin key is env-managed
+  const old = w.apiKey;
+  w.apiKey = "oiq_" + crypto.randomBytes(21).toString("base64url");
+  if (db.usage[old]) { db.usage[w.apiKey] = db.usage[old]; delete db.usage[old]; }
+  save();
+  return w;
+}
 export function updateWorkspace(id, patch) {
   const w = db.workspaces[id]; if (!w) return null;
   if (patch.webhook !== undefined) w.webhook = patch.webhook ? String(patch.webhook).slice(0, 300) : null;

@@ -67,6 +67,8 @@ export function riskHistory(org) {
   };
 }
 
+export const allEvents = () => loadAll();
+
 export function stats() {
   const all = loadAll();
   const byType = {};
