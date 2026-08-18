@@ -404,6 +404,47 @@
 <div id="toasts"></div>
 <div id="status"></div>
 
+<script>
+// v9 auth auto-wire — runs before the app module so a signed-in user's
+// workspace key is in place when the app boots.
+(function () {
+  const token = localStorage.getItem("orbitiq-session");
+  function inject(html) {
+    const bar = document.getElementById("topbar"), clock = document.getElementById("clock");
+    if (!bar || !clock) return;
+    const span = document.createElement("span");
+    span.style.cssText = "display:flex;gap:6px;align-items:center";
+    span.innerHTML = html;
+    bar.insertBefore(span, clock);
+  }
+  if (!token) {
+    inject('<a href="/login.html" style="text-decoration:none"><button style="width:auto;padding:6px 12px">Sign in</button></a>');
+    return;
+  }
+  fetch("/api/auth/me", { headers: { Authorization: "Bearer " + token } })
+    .then(r => { if (!r.ok) throw 0; return r.json(); })
+    .then(d => {
+      if (d.workspace && d.workspace.apiKey && localStorage.getItem("orbitiq-apikey") !== d.workspace.apiKey) {
+        localStorage.setItem("orbitiq-apikey", d.workspace.apiKey);
+        if (!sessionStorage.getItem("oiq-rewired")) { sessionStorage.setItem("oiq-rewired", "1"); location.reload(); return; }
+      }
+      const adminBtn = d.user.role === "admin"
+        ? '<a href="/admin.html" style="text-decoration:none"><button style="width:auto;padding:6px 12px;border-color:#e879f966;color:#e879f9">Admin</button></a>' : "";
+      inject(adminBtn + '<button id="oiq-signout" style="width:auto;padding:6px 12px" title="Signed in as ' + d.user.email + '">Sign out</button>');
+      const so = document.getElementById("oiq-signout");
+      if (so) so.addEventListener("click", async () => {
+        try { await fetch("/api/auth/logout", { method: "POST", headers: { Authorization: "Bearer " + token } }); } catch {}
+        localStorage.removeItem("orbitiq-session"); localStorage.removeItem("orbitiq-user");
+        localStorage.removeItem("orbitiq-apikey"); sessionStorage.removeItem("oiq-rewired");
+        location.reload();
+      });
+    })
+    .catch(() => {
+      localStorage.removeItem("orbitiq-session");
+      inject('<a href="/login.html" style="text-decoration:none"><button style="width:auto;padding:6px 12px">Sign in</button></a>');
+    });
+})();
+</script>
 <script type="module" src="/js/app.js"></script>
 </body>
 </html>

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OrbitIQ — Admin Portal</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --bg:#04060c; --panel:#0b101c; --stroke:rgba(90,130,200,.18); --text:#e6edfa; --dim:#7385a3; --accent:#38bdf8; --mint:#3ecf8e; --amber:#f5b944; --red:#f26d78; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:Inter,sans-serif; font-size:13.5px; line-height:1.55; }
+  .wrap { max-width:960px; margin:0 auto; padding:36px 22px 80px; }
+  header { display:flex; align-items:center; gap:14px; margin-bottom:24px; }
+  h1 { font-size:21px; font-weight:650; letter-spacing:-.015em; }
+  h1 em { color:var(--accent); font-style:normal; }
+  .who { color:var(--dim); font-size:12px; margin-left:auto; }
+  .btn { padding:6px 14px; border:1px solid var(--stroke); border-radius:8px; background:transparent; color:var(--text); font:500 12px Inter; cursor:pointer; }
+  .btn:hover { border-color:var(--accent); }
+  .btn.primary { background:var(--accent); color:#04121f; border:none; font-weight:600; }
+  .btn.danger:hover { border-color:var(--red); color:var(--red); }
+  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:22px; }
+  .card { background:var(--panel); border:1px solid var(--stroke); border-radius:12px; padding:14px 16px; }
+  .card .v { font-size:22px; font-weight:650; color:var(--accent); }
+  .card .l { font-size:10px; color:var(--dim); text-transform:uppercase; letter-spacing:.6px; }
+  section { background:var(--panel); border:1px solid var(--stroke); border-radius:14px; padding:20px 22px; margin-bottom:16px; }
+  section h2 { font-size:12px; text-transform:uppercase; letter-spacing:.9px; color:var(--dim); margin-bottom:14px; display:flex; align-items:center; }
+  section h2 .n { margin-left:8px; background:#10233c; color:var(--accent); border-radius:99px; padding:1px 9px; font-size:10.5px; }
+  .row { display:flex; gap:12px; align-items:flex-start; padding:12px 0; border-top:1px solid rgba(90,130,200,.09); flex-wrap:wrap; }
+  .row:first-of-type { border-top:none; }
+  .row .main { flex:1; min-width:220px; }
+  .row b { font-weight:600; }
+  .sub { color:var(--dim); font-size:11.5px; }
+  select, input.inline { background:#060a15; border:1px solid var(--stroke); border-radius:8px; color:var(--text); padding:6px 9px; font:inherit; font-size:12px; }
+  .pill { padding:1px 9px; border-radius:99px; font:600 10px Inter; text-transform:uppercase; letter-spacing:.5px; }
+  .pill.free { background:#10233c; color:var(--accent); } .pill.tracker { background:#2b2413; color:var(--amber); }
+  .pill.operator,.pill.pro { background:#0f2b1d; color:var(--mint); } .pill.admin { background:#2b1526; color:#e879f9; }
+  .toast { position:fixed; bottom:22px; left:50%; transform:translateX(-50%); background:var(--panel); border:1px solid var(--accent); border-radius:10px; padding:12px 18px; font-size:12.5px; max-width:90vw; display:none; }
+  .cred { font-family:"IBM Plex Mono",monospace; font-size:12px; background:#060a15; border:1px dashed var(--stroke); border-radius:8px; padding:8px 12px; margin-top:8px; word-break:break-all; }
+  .empty { color:var(--dim); font-size:12.5px; padding:8px 0; }
+  a { color:var(--accent); text-decoration:none; }
+  @media (max-width:640px){ .cards { grid-template-columns:repeat(2,1fr);} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Orbit<em>IQ</em> · Admin</h1>
+    <span class="who" id="who">checking session…</span>
+    <button class="btn" onclick="location.href='/'">Live picture</button>
+    <button class="btn" id="chpw">Change password</button>
+    <button class="btn danger" id="signout">Sign out</button>
+  </header>
+
+  <div class="cards">
+    <div class="card"><div class="v" id="c-pending">—</div><div class="l">pending requests</div></div>
+    <div class="card"><div class="v" id="c-users">—</div><div class="l">accounts</div></div>
+    <div class="card"><div class="v" id="c-ws">—</div><div class="l">workspaces</div></div>
+    <div class="card"><div class="v" id="c-catalog">—</div><div class="l">objects tracked</div></div>
+  </div>
+
+  <section>
+    <h2>Access requests <span class="n" id="rq-n">0</span></h2>
+    <div id="requests"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Accounts &amp; plans</h2>
+    <div id="users"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Workspaces (API keys)</h2>
+    <div id="workspaces"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>Broadcast notice</h2>
+    <div class="row" style="border:none">
+      <input class="inline" id="bc-msg" placeholder="Message pushed live to every connected client" style="flex:1">
+      <button class="btn primary" id="bc-send">Send</button>
+    </div>
+  </section>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const token = localStorage.getItem("orbitiq-session");
+let apiKey = localStorage.getItem("orbitiq-apikey");
+const PLANS = ["free", "tracker", "operator"];
+function toast(t, ms) { const el = $("toast"); el.textContent = t; el.style.display = "block"; clearTimeout(el._t); el._t = setTimeout(() => el.style.display = "none", ms || 5000); }
+const H = () => ({ "Content-Type": "application/json", "X-API-Key": apiKey });
+async function api(p, opts) {
+  const r = await fetch(p, { headers: H(), ...(opts || {}) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || "HTTP " + r.status);
+  return d;
+}
+
+(async function boot() {
+  if (!token) return location.href = "/login.html";
+  try {
+    const me = await (await fetch("/api/auth/me", { headers: { Authorization: "Bearer " + token } })).json();
+    if (!me.user || me.user.role !== "admin") { toast("Admin access required"); return setTimeout(() => location.href = "/login.html", 1200); }
+    $("who").textContent = me.user.email;
+    if (me.workspace && me.workspace.apiKey) { apiKey = me.workspace.apiKey; localStorage.setItem("orbitiq-apikey", apiKey); }
+    if (me.user.mustChangePassword) changePw(true);
+    refresh();
+  } catch { location.href = "/login.html"; }
+})();
+
+async function refresh() {
+  try {
+    const [rq, us, ov, st] = await Promise.all([
+      api("/api/admin/access-requests"),
+      api("/api/admin/users"),
+      api("/api/admin/overview"),
+      fetch("/api/status").then(r => r.json())
+    ]);
+    const pending = rq.requests.filter(r => r.status === "pending");
+    $("c-pending").textContent = pending.length;
+    $("c-users").textContent = us.users.length;
+    $("c-ws").textContent = ov.workspaces.length;
+    $("c-catalog").textContent = (st.catalogObjects || 0).toLocaleString();
+    $("rq-n").textContent = pending.length;
+
+    $("requests").innerHTML = rq.requests.length ? rq.requests.slice(0, 25).map(r => `
+      <div class="row">
+        <div class="main"><b>${esc(r.email)}</b> ${r.name ? "· " + esc(r.name) : ""}
+          <span class="pill ${r.status === "pending" ? "tracker" : r.status === "approved" ? "operator" : "free"}">${r.status}</span>
+          <div class="sub">${r.org ? "org: " + esc(r.org) + " · " : ""}${esc(r.message || "no message")} · ${new Date(r.createdAt).toUTCString().slice(0, 22)}</div>
+        </div>
+        ${r.status === "pending" ? `
+          <select id="pl-${r.id}"><option value="free">Observer (free)</option><option value="tracker">Tracker $9</option><option value="operator" selected>Operator $99</option></select>
+          <button class="btn primary" onclick="approve('${r.id}')">Approve</button>
+          <button class="btn danger" onclick="deny('${r.id}')">Deny</button>` : ""}
+      </div>`).join("") : `<div class="empty">No access requests yet. Users request from <a href="/login.html">/login.html</a>.</div>`;
+
+    $("users").innerHTML = us.users.map(u => `
+      <div class="row">
+        <div class="main"><b>${esc(u.email)}</b> <span class="pill ${u.role === "admin" ? "admin" : (u.workspace?.plan || "free")}">${u.role === "admin" ? "admin" : (u.workspace?.plan || "no plan")}</span>
+          <div class="sub">${esc(u.name)}${u.workspace ? " · workspace: " + esc(u.workspace.name) + (u.workspace.org ? " (" + esc(u.workspace.org) + ")" : "") : " · no workspace"}</div>
+        </div>
+        ${u.role !== "admin" ? `
+          ${u.workspace ? `<select onchange="setPlan('${u.workspace.id}', this.value)">${PLANS.map(p => `<option value="${p}" ${u.workspace.plan === p ? "selected" : ""}>${p}</option>`).join("")}</select>` : ""}
+          <button class="btn" onclick="resetPw('${u.id}', '${esc(u.email)}')">Reset password</button>` : `<span class="sub">env-managed</span>`}
+      </div>`).join("");
+
+    $("workspaces").innerHTML = ov.workspaces.map(w => `
+      <div class="row">
+        <div class="main"><b>${esc(w.name)}</b> <span class="pill ${w.role === "admin" ? "admin" : "free"}">${w.role}</span>
+          <div class="sub">${w.org || "global"} · ${w.callsToday} calls today · ${w.alertCount} alerts</div>
+        </div>
+        ${w.role !== "admin" ? `<button class="btn danger" onclick="delWs('${w.id}', '${esc(w.name)}')">Delete</button>` : ""}
+      </div>`).join("");
+  } catch (e) { toast("Load failed: " + e.message); }
+}
+const esc = s => String(s ?? "").replace(/[<>&"']/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[c]));
+
+async function approve(id) {
+  try {
+    const plan = $("pl-" + id).value;
+    const d = await api("/api/admin/access-requests/" + id + "/approve", { method: "POST", body: JSON.stringify({ plan }) });
+    toast("Approved — share these credentials with " + d.email, 20000);
+    const el = document.createElement("div");
+    el.className = "cred";
+    el.textContent = "email: " + d.email + "   temp password: " + d.tempPassword + "   plan: " + d.workspace.plan;
+    $("toast").appendChild(el);
+    try { await navigator.clipboard.writeText("OrbitIQ access approved!\nSign in at " + location.origin + "/login.html\nEmail: " + d.email + "\nTemporary password: " + d.tempPassword + "\n(You'll be asked to change it.)"); toast("Approved — credentials copied to clipboard for " + d.email, 15000); } catch {}
+    refresh();
+  } catch (e) { toast(e.message); }
+}
+async function deny(id) {
+  if (!confirm("Deny this access request?")) return;
+  try { await api("/api/admin/access-requests/" + id + "/deny", { method: "POST", body: "{}" }); refresh(); } catch (e) { toast(e.message); }
+}
+async function setPlan(wsId, plan) {
+  try { await api("/api/admin/workspaces/" + wsId + "/plan", { method: "POST", body: JSON.stringify({ plan }) }); toast("Plan set to " + plan); refresh(); } catch (e) { toast(e.message); }
+}
+async function resetPw(id, email) {
+  if (!confirm("Reset password for " + email + "?")) return;
+  try {
+    const d = await api("/api/admin/users/" + id + "/reset-password", { method: "POST", body: "{}" });
+    try { await navigator.clipboard.writeText(d.tempPassword); } catch {}
+    toast("New temp password for " + email + ": " + d.tempPassword + " (copied)", 20000);
+  } catch (e) { toast(e.message); }
+}
+async function delWs(id, name) {
+  if (!confirm("Delete workspace \"" + name + "\" and its alerts?")) return;
+  try { await api("/api/admin/workspaces/" + id, { method: "DELETE" }); refresh(); } catch (e) { toast(e.message); }
+}
+$("bc-send").onclick = async () => {
+  const m = $("bc-msg").value.trim(); if (!m) return;
+  try { const d = await api("/api/admin/broadcast", { method: "POST", body: JSON.stringify({ message: m }) }); toast("Delivered to " + d.delivered + " client(s)"); $("bc-msg").value = ""; } catch (e) { toast(e.message); }
+};
+$("signout").onclick = async () => {
+  try { await fetch("/api/auth/logout", { method: "POST", headers: { Authorization: "Bearer " + token } }); } catch {}
+  localStorage.removeItem("orbitiq-session"); localStorage.removeItem("orbitiq-user");
+  location.href = "/login.html";
+};
+function changePw(forced) {
+  const cur = prompt(forced ? "Set a new password — enter your CURRENT password first:" : "Current password:");
+  if (cur === null) return;
+  const next = prompt("New password (min 8 characters):");
+  if (next === null) return;
+  fetch("/api/auth/change-password", {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+    body: JSON.stringify({ current: cur, next })
+  }).then(r => r.json()).then(d => toast(d.ok ? "Password changed" : d.error || "Failed"));
+}
+$("chpw").onclick = () => changePw(false);
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>
