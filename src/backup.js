@@ -27,6 +27,7 @@ const MAX_LEDGER_LINES = 60000; // keep backups well under API blob limits
 const FILES = [
   { local: path.join(DATA_DIR, "ledger.jsonl"), remote: "backup/ledger.jsonl", capLines: MAX_LEDGER_LINES },
   { local: path.join(DATA_DIR, "store.json"), remote: "backup/store.json" },
+  { local: path.join(DATA_DIR, "auth.json"), remote: "backup/auth.json" },
   { local: path.join(DATA_DIR, "elements-history.json"), remote: "backup/elements-history.json" }
 ];
 
