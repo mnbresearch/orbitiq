@@ -17,6 +17,7 @@ import * as ledger from "./src/ledger.js";
 import * as store from "./src/store.js";
 import * as netops from "./src/netops.js";
 import * as fleetintel from "./src/fleetintel.js";
+import * as auth from "./src/auth.js";
 import { getSpaceWeather, environmentForLedger } from "./src/spaceweather.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -555,6 +556,88 @@ api.post("/workspace/rotate-key", requireWs, (req, res) => {
   res.json({ workspace: { id: w.id, name: w.name }, apiKey: w.apiKey, note: "Old key is dead immediately. Store the new key — shown once." });
 });
 
+// ---------- v9: authentication + access requests ----------
+const sessionOf = req => {
+  const h = req.headers.authorization || "";
+  const token = h.startsWith("Bearer ") ? h.slice(7) : null;
+  return token ? auth.sessionUser(token) : null;
+};
+const requireSession = (req, res, next) => {
+  const u = sessionOf(req);
+  if (!u) return res.status(401).json({ error: "Sign in required" });
+  req.user = u; next();
+};
+const loginBuckets = new Map();
+api.post("/auth/login", (req, res) => {
+  const ip = req.ip || "?", min = Math.floor(Date.now() / 60000);
+  const b = loginBuckets.get(ip);
+  if (!b || b.min !== min) loginBuckets.set(ip, { min, n: 1 });
+  else if (++b.n > 10) return res.status(429).json({ error: "Too many attempts — wait a minute" });
+  const { email, password } = req.body || {};
+  const result = auth.login(email, password);
+  if (!result) return res.status(401).json({ error: "Invalid email or password" });
+  const w = result.user.workspaceId ? store.getWorkspace(result.user.workspaceId) : null;
+  res.json({
+    token: result.token,
+    user: { email: result.user.email, name: result.user.name, role: result.user.role, mustChangePassword: !!result.user.mustChangePassword },
+    workspace: w ? { apiKey: w.apiKey, name: w.name, org: w.org, plan: w.plan } : null
+  });
+});
+api.post("/auth/logout", (req, res) => {
+  const h = req.headers.authorization || "";
+  if (h.startsWith("Bearer ")) auth.logout(h.slice(7));
+  res.json({ ok: true });
+});
+api.get("/auth/me", requireSession, (req, res) => {
+  const w = req.user.workspaceId ? store.getWorkspace(req.user.workspaceId) : null;
+  res.json({
+    user: { email: req.user.email, name: req.user.name, role: req.user.role, mustChangePassword: !!req.user.mustChangePassword },
+    workspace: w ? { apiKey: w.apiKey, name: w.name, org: w.org, plan: w.plan } : null
+  });
+});
+api.post("/auth/change-password", requireSession, (req, res) => {
+  const { current, next } = req.body || {};
+  const r = auth.changePassword(req.user.id, current, next);
+  r.error ? res.status(400).json(r) : res.json(r);
+});
+api.post("/auth/request-access", (req, res) => {
+  const r = auth.requestAccess(req.body || {});
+  r.error ? res.status(400).json(r) : res.status(201).json({ ok: true, note: "Request received — the operator reviews and activates access." });
+});
+
+// admin portal (guarded by admin API key, which the admin gets on login)
+api.get("/admin/access-requests", requireAdmin, (req, res) => res.json({ requests: auth.listRequests() }));
+api.post("/admin/access-requests/:id/approve", requireAdmin, async (req, res) => {
+  const r0 = auth.listRequests().find(x => x.id === req.params.id && x.status === "pending");
+  if (!r0) return res.status(404).json({ error: "Request not found or already decided" });
+  const org = req.body?.org ?? r0.org ?? null;
+  const w = store.createWorkspace(r0.name || r0.email, org || null);
+  if (req.body?.plan) store.setPlan(w.id, req.body.plan);
+  const r = auth.decideRequest(req.params.id, true, w.id);
+  if (r.error) return res.status(400).json(r);
+  res.json({
+    ok: true, email: r0.email, tempPassword: r.tempPassword,
+    workspace: { id: w.id, apiKey: w.apiKey, plan: store.getWorkspace(w.id).plan, org: w.org },
+    note: "Share the temporary password with the user — they must change it on first sign-in."
+  });
+});
+api.post("/admin/access-requests/:id/deny", requireAdmin, (req, res) => {
+  const r = auth.decideRequest(req.params.id, false, null);
+  r.error ? res.status(400).json(r) : res.json(r);
+});
+api.get("/admin/users", requireAdmin, (req, res) => {
+  const users = auth.listUsers().map(u => {
+    const w = u.workspaceId ? store.getWorkspace(u.workspaceId) : null;
+    return { ...u, workspace: w ? { id: w.id, name: w.name, org: w.org, plan: w.plan } : null };
+  });
+  res.json({ users, authStats: auth.stats() });
+});
+api.post("/admin/users/:id/reset-password", requireAdmin, (req, res) => {
+  const pw = auth.resetPassword(req.params.id);
+  pw ? res.json({ ok: true, tempPassword: pw, note: "Shown once — share it with the user." })
+     : res.status(404).json({ error: "User not found" });
+});
+
 // ---------- v8: public status ----------
 api.get("/status", async (req, res) => {
   let catalog = 0;
@@ -794,5 +877,13 @@ if (created && !process.env.ORBITIQ_ADMIN_KEY) {
 } else {
   console.log(`Admin workspace ready (${admin.name})`);
 }
+// v9: bootstrap the admin login (email/password → full-access session).
+// Override via ORBITIQ_ADMIN_EMAIL / ORBITIQ_ADMIN_PASSWORD; change the
+// password from the UI after first sign-in.
+auth.bootstrapAdmin(
+  process.env.ORBITIQ_ADMIN_EMAIL || "mridulnanda2004@gmail.com",
+  process.env.ORBITIQ_ADMIN_PASSWORD || "Mridulnanda9",
+  admin.id
+);
 
 server.listen(PORT, () => console.log(`OrbitIQ v8 listening on http://localhost:${PORT}  (API: /api/v1, WS: /ws)`));
