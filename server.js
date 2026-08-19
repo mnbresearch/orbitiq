@@ -18,13 +18,18 @@ import * as store from "./src/store.js";
 import * as netops from "./src/netops.js";
 import * as fleetintel from "./src/fleetintel.js";
 import * as auth from "./src/auth.js";
+import * as mailer from "./src/mailer.js";
 import { getSpaceWeather, environmentForLedger } from "./src/spaceweather.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(compression());
 app.use(express.json({ limit: "100kb" }));
-app.use(express.static(path.join(__dirname, "public")));
+// v10: the landing page is the front door; the console lives at /app
+const PUBLIC_DIR = path.join(__dirname, "public");
+app.get("/", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "landing.html")));
+app.get(["/app", "/console"], (req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
+app.use(express.static(PUBLIC_DIR, { index: false }));
 app.use("/vendor/three", express.static(path.join(__dirname, "node_modules", "three", "build")));
 app.use("/vendor/satellite", express.static(path.join(__dirname, "node_modules", "satellite.js", "dist")));
 
@@ -408,16 +413,16 @@ api.get("/intel/anomalies", requirePlan("operator"), async (req, res) => {
   catch (e) { res.status(502).json({ error: "Orbital data source unavailable", detail: e.message }); }
 });
 
-// ---------- plans (public pricing surface) ----------
+// ---------- plans (public pricing surface, v10 enterprise catalogue) ----------
 api.get("/plans", (req, res) => res.json({
-  plans: [
-    { id: "free", label: "Observer", price: "$0", dailyCalls: 200, includes: ["Live 3D tracking & catalog", "Launches & events", "Basic conjunction screening", "TLE staleness & Gabbard teasers"] },
-    { id: "tracker", label: "Tracker", price: "$9/mo", dailyCalls: 2000, includes: ["Everything in Observer", "Pro pass prediction with Doppler", "Optical visibility forecasting", "Eclipse windows"] },
-    { id: "operator", label: "Operator", price: "$99/mo", dailyCalls: 20000, includes: ["Everything in Tracker", "Collision probability (Pc) screening", "Fleet Risk Index + history", "Background alerting + webhooks", "Intelligence archive queries", "Weekly Fleet Intelligence Reports"] },
-    { id: "mission", label: "Mission", price: "custom", dailyCalls: null, includes: ["Everything in Operator", "Custom orgs & SLAs", "Data exports & integrations"] }
-  ],
-  activation: "Payments are handled by the operator today (contact via workspace). Plan is activated on your API key within minutes.",
-  note: "Prices are launch pricing and may change."
+  plans: store.PLAN_CATALOG.map(p => ({
+    ...p,
+    label: p.name,
+    includes: p.features,
+    dailyCalls: store.PLANS[p.id]?.dailyCalls ?? null
+  })),
+  activation: "Access is granted by review. Approved workspaces are provisioned by the MNB Research team and credentials are issued by email.",
+  note: "Every tier is invitation-based — there is no self-service checkout."
 }));
 
 // ---------- intelligence archive (the data moat) ----------
@@ -600,10 +605,32 @@ api.post("/auth/change-password", requireSession, (req, res) => {
   const r = auth.changePassword(req.user.id, current, next);
   r.error ? res.status(400).json(r) : res.json(r);
 });
-api.post("/auth/request-access", (req, res) => {
+// v10: one intake path for the landing-page contact form and the login page.
+// Persist first, then notify — mail failures never lose a lead.
+const leadBuckets = new Map();
+async function intake(req, res) {
+  const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress || "?";
+  const now = Date.now();
+  const b = leadBuckets.get(ip) || { n: 0, t: now };
+  if (now - b.t > 3600000) { b.n = 0; b.t = now; }
+  b.n++; leadBuckets.set(ip, b);
+  if (b.n > 5) return res.status(429).json({ error: "Too many requests from this address — please email us directly." });
+
   const r = auth.requestAccess(req.body || {});
-  r.error ? res.status(400).json(r) : res.status(201).json({ ok: true, note: "Request received — the operator reviews and activates access." });
-});
+  if (r.error) return res.status(400).json(r);
+  const lead = r.request;
+  res.status(201).json({
+    ok: true,
+    note: "Request received — our team reviews every application personally and will be in touch by email.",
+    notified: mailer.enabled()
+  });
+  if (mailer.enabled()) {
+    mailer.notifyAccessRequest(lead).catch(() => {});
+    mailer.acknowledgeRequest(lead).catch(() => {});
+  }
+}
+api.post("/auth/request-access", intake);
+api.post("/contact", intake);
 
 // admin portal (guarded by admin API key, which the admin gets on login)
 api.get("/admin/access-requests", requireAdmin, (req, res) => res.json({ requests: auth.listRequests() }));
@@ -615,15 +642,30 @@ api.post("/admin/access-requests/:id/approve", requireAdmin, async (req, res) =>
   if (req.body?.plan) store.setPlan(w.id, req.body.plan);
   const r = auth.decideRequest(req.params.id, true, w.id);
   if (r.error) return res.status(400).json(r);
+  const plan = store.getWorkspace(w.id).plan;
+  const emailed = mailer.enabled();
+  if (emailed) {
+    mailer.sendCredentials({
+      email: r0.email, name: r0.name, tempPassword: r.tempPassword,
+      plan: store.PLANS[plan]?.label || plan, apiKey: w.apiKey
+    }).catch(() => {});
+  }
   res.json({
-    ok: true, email: r0.email, tempPassword: r.tempPassword,
-    workspace: { id: w.id, apiKey: w.apiKey, plan: store.getWorkspace(w.id).plan, org: w.org },
-    note: "Share the temporary password with the user — they must change it on first sign-in."
+    ok: true, email: r0.email, tempPassword: r.tempPassword, emailed,
+    workspace: { id: w.id, apiKey: w.apiKey, plan, org: w.org },
+    note: emailed
+      ? "Credentials emailed to the applicant. The temporary password is shown here as a backup."
+      : "Share the temporary password with the user — they must change it on first sign-in."
   });
 });
 api.post("/admin/access-requests/:id/deny", requireAdmin, (req, res) => {
+  const r0 = auth.listRequests().find(x => x.id === req.params.id && x.status === "pending");
   const r = auth.decideRequest(req.params.id, false, null);
-  r.error ? res.status(400).json(r) : res.json(r);
+  if (r.error) return res.status(400).json(r);
+  if (r0 && mailer.enabled() && req.body?.notify !== false) {
+    mailer.sendDecline({ email: r0.email, name: r0.name }).catch(() => {});
+  }
+  res.json({ ...r, emailed: mailer.enabled() });
 });
 api.get("/admin/users", requireAdmin, (req, res) => {
   const users = auth.listUsers().map(u => {
@@ -649,6 +691,7 @@ api.get("/status", async (req, res) => {
     catalogObjects: catalog,
     archive: ledger.stats(),
     backup: backup.status(),
+    mail: mailer.status(),
     liveClients: wss.clients.size,
     time: new Date().toISOString()
   });
