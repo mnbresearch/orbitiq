@@ -72,11 +72,61 @@ export const findByKey = key => Object.values(db.workspaces).find(w => w.apiKey 
 export const getWorkspace = id => db.workspaces[id] || null;
 export const allWorkspaces = () => Object.values(db.workspaces);
 export const PLANS = {
-  free:     { rank: 0, dailyCalls: 200,   label: "Observer" },
-  tracker:  { rank: 1, dailyCalls: 2000,  label: "Tracker" },
-  operator: { rank: 2, dailyCalls: 20000, label: "Operator" },
-  pro:      { rank: 2, dailyCalls: 20000, label: "Operator" } // legacy alias
+  free:     { rank: 0, dailyCalls: 200,   label: "Observer",      price: 0,    period: "invitation only" },
+  tracker:  { rank: 1, dailyCalls: 2000,  label: "Operator",      price: 2500, period: "per month" },
+  operator: { rank: 2, dailyCalls: 20000, label: "Constellation", price: 9000, period: "per month" },
+  pro:      { rank: 2, dailyCalls: 20000, label: "Constellation", price: 9000, period: "per month" } // legacy alias
 };
+
+// Public catalogue — what the landing page and pricing modal render.
+export const PLAN_CATALOG = [
+  {
+    id: "free", name: "Observer", price: "Invitation only", cadence: "",
+    pitch: "For researchers, analysts and prospective operators evaluating the platform.",
+    features: [
+      "Live catalogue of 16,000+ tracked objects",
+      "Global conjunction screening feed",
+      "Re-entry watch board and space-weather context",
+      "200 API calls per day"
+    ]
+  },
+  {
+    id: "tracker", name: "Operator", price: "$2,500", cadence: "per month",
+    pitch: "For single-fleet operators who need their own objects screened continuously.",
+    highlight: true,
+    features: [
+      "Everything in Observer",
+      "Fleet-scoped conjunction screening and risk ranking",
+      "Probability-of-collision analysis per encounter",
+      "Ground-station contact planning and pass scheduling",
+      "Alert inbox with live push, plus email escalation",
+      "2,000 API calls per day"
+    ]
+  },
+  {
+    id: "operator", name: "Constellation", price: "$9,000", cadence: "per month",
+    pitch: "For multi-plane constellations where screening volume and history both matter.",
+    features: [
+      "Everything in Operator",
+      "Constellation architecture analytics across all planes",
+      "Full access to the intelligence archive and trend history",
+      "Manoeuvre and anomaly detection across your fleet",
+      "Ephemeris export and shareable operator reports",
+      "20,000 API calls per day"
+    ]
+  },
+  {
+    id: "enterprise", name: "Enterprise", price: "Bespoke", cadence: "",
+    pitch: "For agencies, insurers and defence programmes with bespoke requirements.",
+    features: [
+      "Everything in Constellation",
+      "Dedicated instance and custom data retention",
+      "Private catalogue ingestion and bespoke integrations",
+      "Named analyst support and briefing cadence",
+      "Commercial terms and volumes agreed directly"
+    ]
+  }
+];
 export function setPlan(id, plan) {
   const w = db.workspaces[id]; if (!w) return null;
   w.plan = PLANS[plan] ? plan : "free";

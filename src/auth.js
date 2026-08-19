@@ -104,15 +104,21 @@ export function sessionUser(token) {
 export function logout(token) { delete db.sessions[token]; save(); }
 
 // ---------- access requests ----------
-export function requestAccess({ email, name, org, message }) {
+export function requestAccess({ email, name, org, message, phone, position, plan }) {
   email = String(email || "").toLowerCase().trim();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return { error: "Valid email required" };
+  if (!String(name || "").trim()) return { error: "Name required" };
+  if (!String(phone || "").trim()) return { error: "Phone number required" };
+  if (!String(position || "").trim()) return { error: "Position required" };
   if (findUser(email)) return { error: "An account with this email already exists — sign in instead" };
   if (db.requests.some(r => r.email === email && r.status === "pending"))
     return { error: "A request for this email is already pending review" };
   const req = {
     id: crypto.randomUUID(), email,
     name: String(name || "").slice(0, 60),
+    phone: String(phone || "").slice(0, 32) || null,
+    position: String(position || "").slice(0, 60) || null,
+    plan: String(plan || "").slice(0, 24) || null,
     org: String(org || "").slice(0, 40) || null,
     message: String(message || "").slice(0, 280),
     status: "pending", createdAt: new Date().toISOString()
