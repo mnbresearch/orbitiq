@@ -59,7 +59,16 @@
   @media(max-width:900px){.navlinks{display:none}}
 
   /* ---------- hero ---------- */
-  .hero{position:relative;padding:120px 0 92px;min-height:clamp(620px,92vh,940px);display:flex;align-items:center}
+  .hero{position:relative;padding:110px 0 92px;min-height:clamp(620px,92vh,940px);display:flex;align-items:center}
+  .herogrid{display:grid;grid-template-columns:1.04fr .96fr;gap:40px;align-items:center}
+  @media(max-width:1000px){.herogrid{grid-template-columns:1fr}.globewrap{display:none}}
+  .globewrap{position:relative;display:grid;place-items:center;min-height:520px}
+  #globe{width:100%;max-width:560px;aspect-ratio:1;opacity:0;animation:fadeUp 1.5s .5s forwards}
+  .glabel{position:absolute;font:500 10px/1 "IBM Plex Mono",monospace;letter-spacing:1.4px;
+    text-transform:uppercase;color:var(--faint);padding:5px 10px;border:1px solid var(--stroke);
+    border-radius:99px;background:rgba(6,10,21,.72);backdrop-filter:blur(6px);white-space:nowrap;
+    opacity:0;animation:fadeUp .9s 1.6s forwards}
+  .glabel.a{top:11%;right:2%}.glabel.b{bottom:15%;left:0}
   .eyebrow{display:inline-flex;align-items:center;gap:9px;padding:7px 15px;border-radius:99px;
     font-size:10.5px;letter-spacing:1.9px;text-transform:uppercase;color:var(--gold);
     border:1px solid rgba(240,201,135,.3);background:rgba(240,201,135,.07);
@@ -212,12 +221,21 @@
 </div></nav>
 
 <header class="hero"><div class="wrap">
-  <div class="eyebrow"><b></b> Access by approval only</div>
-  <h1 id="h1"></h1>
-  <p class="lede">OrbitIQ is a private space traffic intelligence platform for satellite operators. It screens the live catalogue continuously, ranks what actually threatens your spacecraft, and keeps a permanent record of everything it saw — so your decisions rest on evidence, not on a snapshot.</p>
-  <div class="cta">
-    <a href="#request" class="btn solid">Request access →</a>
-    <a href="#capabilities" class="btn">Explore the platform</a>
+  <div class="herogrid">
+    <div>
+      <div class="eyebrow"><b></b> Access by approval only</div>
+      <h1 id="h1"></h1>
+      <p class="lede">OrbitIQ is a private space traffic intelligence platform for satellite operators. It screens the live catalogue continuously, ranks what actually threatens your spacecraft, and keeps a permanent record of everything it saw — so your decisions rest on evidence, not on a snapshot.</p>
+      <div class="cta">
+        <a href="#request" class="btn solid">Request access →</a>
+        <a href="#capabilities" class="btn">Explore the platform</a>
+      </div>
+    </div>
+    <div class="globewrap">
+      <canvas id="globe" width="1120" height="1120"></canvas>
+      <span class="glabel a">LEO · 550 km</span>
+      <span class="glabel b">Screening · continuous</span>
+    </div>
   </div>
 
   <div class="strip">
@@ -362,205 +380,201 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   ).join(" ");
 })();
 
-/* ===================== animated space background ===================== */
+/* ===================== deep-space backdrop (stars only) ===================== */
 (() => {
-  const cv = $("space"), ctx = cv.getContext("2d", { alpha: true });
-  let W, H, DPR, stars = [], sats = [], rockets = [], shooters = [], t = 0, earthY, earthR, running = true;
-  const mobile = () => innerWidth < 760;
-
+  const cv = $("space"), ctx = cv.getContext("2d");
+  let W, H, DPR, stars = [], shooters = [], t = 0, running = true;
   function resize() {
     DPR = Math.min(devicePixelRatio || 1, 2);
     W = innerWidth; H = innerHeight;
     cv.width = W * DPR; cv.height = H * DPR;
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    earthR = Math.max(W * 1.25, 900);
-    earthY = H + earthR - Math.min(H * 0.17, 130);
-    build();
-  }
-  function build() {
-    const n = mobile() ? 150 : 340;
+    const n = W < 760 ? 150 : 360;
     stars = Array.from({ length: n }, () => ({
       x: Math.random() * W, y: Math.random() * H,
-      z: Math.random() * 0.75 + 0.25,
-      r: Math.random() * 1.25 + 0.25,
-      p: Math.random() * Math.PI * 2
-    }));
-    const ns = mobile() ? 5 : 11;
-    sats = Array.from({ length: ns }, (_, i) => ({
-      a: Math.random() * Math.PI * 2,
-      alt: earthR + 60 + Math.random() * (mobile() ? 130 : 240),
-      sp: (Math.random() * 0.00022 + 0.00011) * (Math.random() < .3 ? -1 : 1),
-      tilt: (Math.random() - .5) * 0.5,
-      sq: 0.26 + Math.random() * 0.24,
-      hue: i % 3 === 0 ? "167,139,250" : "62,201,255",
-      trail: []
+      z: Math.random() * .75 + .25, r: Math.random() * 1.3 + .25,
+      p: Math.random() * 6.283
     }));
   }
-
-  function launchRocket() {
-    const ang = (Math.random() - .5) * 0.5;
-    rockets.push({
-      ang, prog: 0, sp: 0.0034 + Math.random() * 0.0016,
-      drift: (Math.random() - .5) * 0.34, puffs: [], life: 1
-    });
-  }
-
-  function drawEarth() {
-    const cx = W / 2;
-    // outer atmosphere bloom
-    const halo = ctx.createRadialGradient(cx, earthY, earthR * 0.94, cx, earthY, earthR * 1.13);
-    halo.addColorStop(0, "rgba(70,190,255,.52)");
-    halo.addColorStop(.28, "rgba(60,150,255,.20)");
-    halo.addColorStop(.62, "rgba(70,120,255,.07)");
-    halo.addColorStop(1, "rgba(70,190,255,0)");
-    ctx.fillStyle = halo;
-    ctx.beginPath(); ctx.arc(cx, earthY, earthR * 1.13, 0, 6.283); ctx.fill();
-
-    // planet body
-    const g = ctx.createLinearGradient(0, earthY - earthR, 0, earthY - earthR + Math.min(H * 1.1, 620));
-    g.addColorStop(0, "#1b4e7e"); g.addColorStop(.16, "#123a63");
-    g.addColorStop(.45, "#0a2440"); g.addColorStop(1, "#04101f");
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(cx, earthY, earthR, 0, 6.283); ctx.fill();
-
-    // continent-ish darker masses along the limb
-    ctx.save();
-    ctx.beginPath(); ctx.arc(cx, earthY, earthR, 0, 6.283); ctx.clip();
-    ctx.fillStyle = "rgba(6,26,40,.55)";
-    for (const [ox, oy, rx, ry] of [[-.42, .045, .20, .052], [.06, .028, .15, .04], [.5, .06, .17, .05]]) {
-      ctx.beginPath();
-      ctx.ellipse(cx + ox * earthR, earthY - earthR + oy * earthR, rx * earthR, ry * earthR, 0, 0, 6.283);
-      ctx.fill();
-    }
-    ctx.restore();
-
-    // bright limb / terminator arc
-    ctx.strokeStyle = "rgba(150,225,255,.9)"; ctx.lineWidth = 2;
-    ctx.shadowBlur = 26; ctx.shadowColor = "rgba(90,200,255,.95)";
-    ctx.beginPath(); ctx.arc(cx, earthY, earthR, Math.PI * 1.04, Math.PI * 1.96); ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // thin airglow band just above the surface
-    ctx.strokeStyle = "rgba(120,215,255,.26)"; ctx.lineWidth = 9;
-    ctx.beginPath(); ctx.arc(cx, earthY, earthR + 8, Math.PI * 1.08, Math.PI * 1.92); ctx.stroke();
-
-    // city lights on the night side
-    ctx.save();
-    for (let i = 0; i < 46; i++) {
-      const a = Math.PI * 1.06 + (i / 45) * Math.PI * 0.88;
-      const jitter = ((i * 37) % 11) / 11;
-      const rr = earthR - 3 - jitter * 26;
-      const x = cx + Math.cos(a) * rr, y = earthY + Math.sin(a) * rr;
-      ctx.globalAlpha = 0.16 + 0.34 * Math.abs(Math.sin(t * 0.02 + i));
-      ctx.fillStyle = i % 4 === 0 ? "rgba(255,225,170,1)" : "rgba(255,205,130,1)";
-      ctx.beginPath(); ctx.arc(x, y, 0.9 + jitter, 0, 6.283); ctx.fill();
-    }
-    ctx.restore();
-  }
-
   function frame() {
-    if (!running) return requestAnimationFrame(frame);
+    requestAnimationFrame(frame);
+    if (!running) return;
     t++;
     ctx.clearRect(0, 0, W, H);
-
-    // stars
     for (const s of stars) {
-      const tw = 0.55 + 0.45 * Math.sin(t * 0.013 * s.z + s.p);
-      ctx.globalAlpha = tw * s.z;
+      ctx.globalAlpha = (.55 + .45 * Math.sin(t * .013 * s.z + s.p)) * s.z;
       ctx.fillStyle = "#dceaff";
-      ctx.beginPath(); ctx.arc(s.x, s.y - (t * 0.0075 * s.z) % (H + 8), s.r, 0, 6.283); ctx.fill();
+      ctx.beginPath(); ctx.arc(s.x, s.y - (t * .0075 * s.z) % (H + 8), s.r, 0, 6.283); ctx.fill();
     }
     ctx.globalAlpha = 1;
-
-    // shooting star
-    if (!reduced && Math.random() < 0.0022) shooters.push({ x: Math.random() * W, y: Math.random() * H * .5, l: 1 });
+    if (!reduced && Math.random() < .0022) shooters.push({ x: Math.random() * W, y: Math.random() * H * .5, l: 1 });
     for (let i = shooters.length - 1; i >= 0; i--) {
-      const s = shooters[i]; s.x += 7; s.y += 2.6; s.l -= 0.017;
+      const s = shooters[i]; s.x += 7; s.y += 2.6; s.l -= .017;
       ctx.strokeStyle = `rgba(220,240,255,${Math.max(s.l, 0) * .85})`; ctx.lineWidth = 1.4;
       ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x - 70, s.y - 26); ctx.stroke();
       if (s.l <= 0) shooters.splice(i, 1);
     }
+  }
+  addEventListener("resize", resize, { passive: true });
+  document.addEventListener("visibilitychange", () => { running = !document.hidden; });
+  resize(); requestAnimationFrame(frame);
+})();
 
-    drawEarth();
+/* ===================== hero globe: rotating Earth, orbits, launches ===================== */
+(() => {
+  const cv = $("globe"); if (!cv) return;
+  const ctx = cv.getContext("2d");
+  const S = 1120, C = S / 2, R = S * 0.29;
+  let t = 0, spin = 0, rockets = [], running = true;
 
-    // satellites on orbits
-    for (const s of sats) {
-      s.a += s.sp * (reduced ? 0 : 16);
-      const px = W / 2 + Math.cos(s.a) * s.alt;
-      const py = earthY + Math.sin(s.a) * s.alt * s.sq + Math.cos(s.a) * s.tilt * 90;
-      if (py < H + 60 && py > -60) {
-        s.trail.push([px, py]); if (s.trail.length > 30) s.trail.shift();
-        for (let i = 1; i < s.trail.length; i++) {
-          ctx.strokeStyle = `rgba(${s.hue},${(i / s.trail.length) * 0.3})`;
-          ctx.lineWidth = 1.1;
-          ctx.beginPath(); ctx.moveTo(s.trail[i - 1][0], s.trail[i - 1][1]);
-          ctx.lineTo(s.trail[i][0], s.trail[i][1]); ctx.stroke();
-        }
-        ctx.fillStyle = `rgba(${s.hue},.95)`;
-        ctx.shadowBlur = 12; ctx.shadowColor = `rgba(${s.hue},.9)`;
-        ctx.beginPath(); ctx.arc(px, py, 2.1, 0, 6.283); ctx.fill();
-        ctx.shadowBlur = 0;
-      } else s.trail.length = 0;
+  const RINGS = [
+    { rx: 1.46, ry: .40, tilt: -0.32, sp: .0042, hue: "62,201,255", n: 3 },
+    { rx: 1.72, ry: .30, tilt: 0.46, sp: -.0031, hue: "167,139,250", n: 3 },
+    { rx: 1.24, ry: .52, tilt: 0.12, sp: .0055, hue: "62,232,155", n: 2 }
+  ];
+
+  function ringPoint(r, a) {
+    const x = Math.cos(a) * R * r.rx, y = Math.sin(a) * R * r.ry;
+    const cs = Math.cos(r.tilt), sn = Math.sin(r.tilt);
+    return [C + x * cs - y * sn, C + x * sn + y * cs, Math.sin(a)];
+  }
+
+  function launch() {
+    rockets.push({ a: -Math.PI / 2 + (Math.random() - .5) * 1.5, prog: 0, sp: .0052, path: [], puffs: [] });
+  }
+
+  function frame() {
+    requestAnimationFrame(frame);
+    if (!running) return;
+    t++; if (!reduced) spin += .0016;
+    ctx.clearRect(0, 0, S, S);
+
+    // atmosphere bloom
+    const halo = ctx.createRadialGradient(C, C, R * .92, C, C, R * 1.55);
+    halo.addColorStop(0, "rgba(70,190,255,.42)");
+    halo.addColorStop(.35, "rgba(60,150,255,.13)");
+    halo.addColorStop(1, "rgba(70,190,255,0)");
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(C, C, R * 1.55, 0, 6.283); ctx.fill();
+
+    // back half of each orbit ring
+    for (const r of RINGS) {
+      ctx.strokeStyle = `rgba(${r.hue},.16)`; ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      for (let i = 0; i <= 60; i++) {
+        const a = Math.PI + (i / 60) * Math.PI;
+        const [x, y] = ringPoint(r, a); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.stroke();
     }
 
-    // rockets
+    // planet body
+    const g = ctx.createRadialGradient(C - R * .38, C - R * .42, R * .12, C, C, R);
+    g.addColorStop(0, "#2f7fb8"); g.addColorStop(.34, "#175c92");
+    g.addColorStop(.68, "#0d3a63"); g.addColorStop(1, "#061a2e");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(C, C, R, 0, 6.283); ctx.fill();
+
+    // rotating graticule + landmasses
+    ctx.save();
+    ctx.beginPath(); ctx.arc(C, C, R, 0, 6.283); ctx.clip();
+    ctx.strokeStyle = "rgba(150,220,255,.14)"; ctx.lineWidth = 1;
+    for (let i = 0; i < 12; i++) {
+      const ph = (spin + i / 12) % 1, k = Math.cos(ph * 6.283);
+      ctx.beginPath(); ctx.ellipse(C, C, Math.abs(R * k), R, 0, 0, 6.283); ctx.stroke();
+    }
+    for (let i = 1; i < 6; i++) {
+      const y = C - R + (i / 6) * R * 2, rr = Math.sqrt(Math.max(R * R - (y - C) * (y - C), 0));
+      ctx.beginPath(); ctx.moveTo(C - rr, y); ctx.lineTo(C + rr, y); ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(26,86,64,.5)";
+    for (const [lon, lat, w, hh] of [[.1, -.28, .30, .17], [.44, .12, .22, .22], [.72, -.1, .26, .15], [.93, .3, .18, .13]]) {
+      const ph = ((lon + spin) % 1) * 6.283, k = Math.cos(ph);
+      if (k < 0) continue;
+      ctx.beginPath();
+      ctx.ellipse(C + Math.sin(ph) * R * .82, C + lat * R * 1.5, R * w * k, R * hh, 0, 0, 6.283);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // terminator shadow + rim light
+    const sh = ctx.createLinearGradient(C - R, C - R, C + R, C + R);
+    sh.addColorStop(0, "rgba(0,0,0,0)"); sh.addColorStop(.52, "rgba(2,6,14,.45)");
+    sh.addColorStop(1, "rgba(2,6,14,.86)");
+    ctx.fillStyle = sh;
+    ctx.beginPath(); ctx.arc(C, C, R, 0, 6.283); ctx.fill();
+    ctx.strokeStyle = "rgba(160,230,255,.85)"; ctx.lineWidth = 2.4;
+    ctx.shadowBlur = 30; ctx.shadowColor = "rgba(90,200,255,.9)";
+    ctx.beginPath(); ctx.arc(C, C, R, Math.PI * 1.08, Math.PI * 1.98); ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // city lights on the night limb
+    for (let i = 0; i < 34; i++) {
+      const a = Math.PI * .12 + (i / 33) * Math.PI * .78;
+      const rr = R * (.62 + ((i * 29) % 13) / 34);
+      ctx.globalAlpha = .12 + .3 * Math.abs(Math.sin(t * .02 + i));
+      ctx.fillStyle = "rgba(255,214,150,1)";
+      ctx.beginPath(); ctx.arc(C + Math.cos(a) * rr, C + Math.sin(a) * rr, 1.5, 0, 6.283); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // front half of rings + satellites
+    for (const r of RINGS) {
+      ctx.strokeStyle = `rgba(${r.hue},.42)`; ctx.lineWidth = 1.7;
+      ctx.beginPath();
+      for (let i = 0; i <= 60; i++) {
+        const a = (i / 60) * Math.PI;
+        const [x, y] = ringPoint(r, a); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.stroke();
+      for (let k = 0; k < r.n; k++) {
+        const a = t * r.sp * (reduced ? 0 : 1) + (k / r.n) * 6.283;
+        const [x, y, depth] = ringPoint(r, a);
+        const front = depth > 0;
+        ctx.globalAlpha = front ? 1 : .34;
+        ctx.fillStyle = `rgba(${r.hue},1)`;
+        ctx.shadowBlur = front ? 16 : 0; ctx.shadowColor = `rgba(${r.hue},.95)`;
+        ctx.beginPath(); ctx.arc(x, y, front ? 5.2 : 3.4, 0, 6.283); ctx.fill();
+        ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+      }
+    }
+
+    // launches
     for (let i = rockets.length - 1; i >= 0; i--) {
       const r = rockets[i];
       r.prog += r.sp;
-      const ease = Math.pow(r.prog, 1.55);
-      const baseX = W / 2 + Math.sin(r.ang) * earthR * 0.42;
-      const x = baseX + r.drift * ease * W * 0.5;
-      const y = (earthY - earthR) - ease * (H * 1.25) + H * 0.06;
-
-      // ion trail: a bright vertical streak that fades behind the vehicle
-      r.path = r.path || [];
-      r.path.push([x, y]); if (r.path.length > 90) r.path.shift();
+      const dist = R + Math.pow(r.prog, 1.35) * R * 1.5;
+      const x = C + Math.cos(r.a) * dist, y = C + Math.sin(r.a) * dist;
+      r.path.push([x, y]); if (r.path.length > 120) r.path.shift();
       for (let j = 1; j < r.path.length; j++) {
         const k = j / r.path.length;
-        ctx.strokeStyle = `rgba(120,205,255,${k * 0.3})`;
-        ctx.lineWidth = 1 + k * 1.6;
+        ctx.strokeStyle = `rgba(150,215,255,${k * .42})`; ctx.lineWidth = .8 + k * 2.4;
         ctx.beginPath(); ctx.moveTo(r.path[j - 1][0], r.path[j - 1][1]);
         ctx.lineTo(r.path[j][0], r.path[j][1]); ctx.stroke();
       }
-      // exhaust particles — tight, hot, short-lived
-      r.puffs.push({ x: x + (Math.random() - .5) * 2.4, y: y + 12, l: 1, s: 1.2 + Math.random() * 1.6 });
+      r.puffs.push({ x, y, l: 1, s: 3 });
       for (let j = r.puffs.length - 1; j >= 0; j--) {
-        const p = r.puffs[j]; p.l -= 0.075; p.s += 0.22; p.y += 1.5;
+        const p = r.puffs[j]; p.l -= .06; p.s += .9;
         if (p.l <= 0) { r.puffs.splice(j, 1); continue; }
-        ctx.fillStyle = `rgba(255,${170 + p.l * 70},${80 + p.l * 90},${p.l * p.l * .5})`;
+        ctx.fillStyle = `rgba(255,${175 + p.l * 65},${90 + p.l * 80},${p.l * p.l * .42})`;
         ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, 6.283); ctx.fill();
       }
-      // exhaust flame
-      const fl = ctx.createLinearGradient(x, y + 6, x, y + 26);
-      fl.addColorStop(0, "rgba(255,240,190,.95)");
-      fl.addColorStop(.5, "rgba(255,150,60,.6)");
-      fl.addColorStop(1, "rgba(255,90,40,0)");
-      ctx.fillStyle = fl;
-      ctx.beginPath(); ctx.moveTo(x - 3.4, y + 6); ctx.lineTo(x + 3.4, y + 6);
-      ctx.lineTo(x, y + 22 + Math.random() * 8); ctx.closePath(); ctx.fill();
-      // body
-      ctx.fillStyle = "#e9f2ff";
-      ctx.beginPath(); ctx.moveTo(x, y - 9); ctx.lineTo(x + 3.2, y + 1);
-      ctx.lineTo(x + 3.2, y + 6); ctx.lineTo(x - 3.2, y + 6);
-      ctx.lineTo(x - 3.2, y + 1); ctx.closePath(); ctx.fill();
-      ctx.fillStyle = "rgba(62,201,255,.9)";
-      ctx.fillRect(x - 3.2, y + 1.4, 6.4, 1.6);
-      ctx.shadowBlur = 18; ctx.shadowColor = "rgba(255,170,80,.8)";
-      ctx.fillStyle = "rgba(255,200,120,.35)";
-      ctx.beginPath(); ctx.arc(x, y + 8, 3, 0, 6.283); ctx.fill();
-      ctx.shadowBlur = 0;
-
-      if (r.prog >= 1.05) rockets.splice(i, 1);
+      ctx.save();
+      ctx.translate(x, y); ctx.rotate(r.a + Math.PI / 2);
+      ctx.fillStyle = "#eef5ff";
+      ctx.beginPath(); ctx.moveTo(0, -13); ctx.lineTo(4.6, 1); ctx.lineTo(4.6, 8);
+      ctx.lineTo(-4.6, 8); ctx.lineTo(-4.6, 1); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "rgba(62,201,255,.95)"; ctx.fillRect(-4.6, 1.6, 9.2, 2.4);
+      ctx.restore();
+      if (r.prog >= 1.15) rockets.splice(i, 1);
     }
 
-    requestAnimationFrame(frame);
+    ctx.globalAlpha = 1;
   }
 
-  addEventListener("resize", resize, { passive: true });
   document.addEventListener("visibilitychange", () => { running = !document.hidden; });
-  resize();
   requestAnimationFrame(frame);
-  if (!reduced) { setTimeout(launchRocket, 2200); setInterval(launchRocket, 8600); }
+  if (!reduced) { setTimeout(launch, 1800); setInterval(launch, 7200); }
 })();
 
 /* ===================== scroll progress + reveals ===================== */
