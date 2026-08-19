@@ -440,7 +440,10 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
 
   function launch() {
-    rockets.push({ a: -Math.PI / 2 + (Math.random() - .5) * 1.5, prog: 0, sp: .0052, path: [], puffs: [] });
+    // never queue vehicles while the tab is hidden — rAF is paused, so they would
+    // all pile up on the pad and appear at once when the user comes back
+    if (document.hidden || rockets.length >= 2) return;
+    rockets.push({ a: -Math.PI / 2 + (Math.random() - .5) * 2.2, prog: 0, sp: .0052, path: [], puffs: [] });
   }
 
   function frame() {
