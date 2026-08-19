@@ -417,8 +417,16 @@
     span.innerHTML = html;
     bar.insertBefore(span, clock);
   }
+  // v10: the console is not a public page — unauthenticated visitors go to the landing page.
   if (!token) {
-    inject('<a href="/login.html" style="text-decoration:none"><button style="width:auto;padding:6px 12px">Sign in</button></a>');
+    document.documentElement.innerHTML =
+      '<body style="margin:0;background:#04060c;color:#e9eefb;font:15px/1.6 Inter,sans-serif;height:100vh;display:grid;place-items:center;text-align:center">' +
+      '<div><div style="font-size:21px;font-weight:650;letter-spacing:-.02em">Orbit<span style="color:#38bdf8">IQ</span></div>' +
+      '<div style="margin-top:10px;color:#8395b3;font-size:13.5px">This console is available to approved operators.</div>' +
+      '<div style="margin-top:22px;display:flex;gap:10px;justify-content:center">' +
+      '<a href="/login.html" style="padding:10px 20px;border-radius:9px;background:#38bdf8;color:#04121f;font-weight:600;font-size:13.5px;text-decoration:none">Sign in</a>' +
+      '<a href="/#request" style="padding:10px 20px;border-radius:9px;border:1px solid rgba(90,130,200,.3);color:#e9eefb;font-weight:600;font-size:13.5px;text-decoration:none">Request access</a>' +
+      '</div></div></body>';
     return;
   }
   fetch("/api/auth/me", { headers: { Authorization: "Bearer " + token } })

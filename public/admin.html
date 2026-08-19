@@ -125,12 +125,13 @@ async function refresh() {
 
     $("requests").innerHTML = rq.requests.length ? rq.requests.slice(0, 25).map(r => `
       <div class="row">
-        <div class="main"><b>${esc(r.email)}</b> ${r.name ? "· " + esc(r.name) : ""}
+        <div class="main"><b>${esc(r.name || r.email)}</b>${r.position ? " · " + esc(r.position) : ""}
           <span class="pill ${r.status === "pending" ? "tracker" : r.status === "approved" ? "operator" : "free"}">${r.status}</span>
-          <div class="sub">${r.org ? "org: " + esc(r.org) + " · " : ""}${esc(r.message || "no message")} · ${new Date(r.createdAt).toUTCString().slice(0, 22)}</div>
+          <div class="sub">${esc(r.email)}${r.phone ? " · " + esc(r.phone) : ""}${r.org ? " · " + esc(r.org) : ""}${r.plan ? " · wants: " + esc(r.plan) : ""} · ${new Date(r.createdAt).toUTCString().slice(0, 22)}</div>
+          ${r.message ? `<div class="sub" style="margin-top:4px;opacity:.85">“${esc(r.message)}”</div>` : ""}
         </div>
         ${r.status === "pending" ? `
-          <select id="pl-${r.id}"><option value="free">Observer (free)</option><option value="tracker">Tracker $9</option><option value="operator" selected>Operator $99</option></select>
+          <select id="pl-${r.id}"><option value="free">Observer (invite)</option><option value="tracker" selected>Operator $2,500</option><option value="operator">Constellation $9,000</option></select>
           <button class="btn primary" onclick="approve('${r.id}')">Approve</button>
           <button class="btn danger" onclick="deny('${r.id}')">Deny</button>` : ""}
       </div>`).join("") : `<div class="empty">No access requests yet. Users request from <a href="/login.html">/login.html</a>.</div>`;
@@ -160,7 +161,7 @@ async function approve(id) {
   try {
     const plan = $("pl-" + id).value;
     const d = await api("/api/admin/access-requests/" + id + "/approve", { method: "POST", body: JSON.stringify({ plan }) });
-    toast("Approved — share these credentials with " + d.email, 20000);
+    toast(d.emailed ? "Approved — credentials emailed to " + d.email : "Approved — share these credentials with " + d.email, 20000);
     const el = document.createElement("div");
     el.className = "cred";
     el.textContent = "email: " + d.email + "   temp password: " + d.tempPassword + "   plan: " + d.workspace.plan;
