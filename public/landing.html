@@ -24,7 +24,9 @@
   /* ---------- background canvas ---------- */
   #space{position:fixed;inset:0;width:100%;height:100%;z-index:0;pointer-events:none}
   .vignette{position:fixed;inset:0;z-index:1;pointer-events:none;
-    background:radial-gradient(ellipse 90% 60% at 50% 8%,transparent 40%,rgba(3,5,11,.55) 78%,rgba(3,5,11,.92) 100%)}
+    background:radial-gradient(ellipse 90% 60% at 50% 8%,transparent 40%,rgba(3,5,11,.5) 78%,rgba(3,5,11,.86) 100%)}
+  /* keeps body copy legible where it crosses the planet limb */
+  section,footer{background:linear-gradient(180deg,rgba(3,5,11,0),rgba(3,5,11,.72) 12%,rgba(3,5,11,.82) 88%,rgba(3,5,11,0))}
 
   /* ---------- scroll progress ---------- */
   #prog{position:fixed;top:0;left:0;height:2px;width:0;z-index:60;
@@ -404,25 +406,55 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
 
   function drawEarth() {
-    // atmosphere halo
-    const halo = ctx.createRadialGradient(W / 2, earthY, earthR * 0.965, W / 2, earthY, earthR * 1.075);
-    halo.addColorStop(0, "rgba(62,201,255,.30)");
-    halo.addColorStop(.45, "rgba(62,140,255,.11)");
-    halo.addColorStop(1, "rgba(62,201,255,0)");
+    const cx = W / 2;
+    // outer atmosphere bloom
+    const halo = ctx.createRadialGradient(cx, earthY, earthR * 0.94, cx, earthY, earthR * 1.13);
+    halo.addColorStop(0, "rgba(70,190,255,.52)");
+    halo.addColorStop(.28, "rgba(60,150,255,.20)");
+    halo.addColorStop(.62, "rgba(70,120,255,.07)");
+    halo.addColorStop(1, "rgba(70,190,255,0)");
     ctx.fillStyle = halo;
-    ctx.beginPath(); ctx.arc(W / 2, earthY, earthR * 1.075, 0, Math.PI * 2); ctx.fill();
-    // body
-    const g = ctx.createLinearGradient(0, earthY - earthR, 0, earthY - earthR + Math.min(H, 460));
-    g.addColorStop(0, "#0d2a4d"); g.addColorStop(.4, "#071a33"); g.addColorStop(1, "#03080f");
+    ctx.beginPath(); ctx.arc(cx, earthY, earthR * 1.13, 0, 6.283); ctx.fill();
+
+    // planet body
+    const g = ctx.createLinearGradient(0, earthY - earthR, 0, earthY - earthR + Math.min(H * 1.1, 620));
+    g.addColorStop(0, "#1b4e7e"); g.addColorStop(.16, "#123a63");
+    g.addColorStop(.45, "#0a2440"); g.addColorStop(1, "#04101f");
     ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(W / 2, earthY, earthR, 0, Math.PI * 2); ctx.fill();
-    // terminator rim
-    ctx.strokeStyle = "rgba(120,205,255,.5)"; ctx.lineWidth = 1.3;
-    ctx.beginPath(); ctx.arc(W / 2, earthY, earthR, Math.PI * 1.06, Math.PI * 1.94); ctx.stroke();
-    // faint city glow band
-    ctx.save(); ctx.globalAlpha = .5;
-    ctx.strokeStyle = "rgba(240,201,135,.16)"; ctx.lineWidth = 6;
-    ctx.beginPath(); ctx.arc(W / 2, earthY, earthR - 5, Math.PI * 1.18, Math.PI * 1.82); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, earthY, earthR, 0, 6.283); ctx.fill();
+
+    // continent-ish darker masses along the limb
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, earthY, earthR, 0, 6.283); ctx.clip();
+    ctx.fillStyle = "rgba(6,26,40,.55)";
+    for (const [ox, oy, rx, ry] of [[-.42, .045, .20, .052], [.06, .028, .15, .04], [.5, .06, .17, .05]]) {
+      ctx.beginPath();
+      ctx.ellipse(cx + ox * earthR, earthY - earthR + oy * earthR, rx * earthR, ry * earthR, 0, 0, 6.283);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // bright limb / terminator arc
+    ctx.strokeStyle = "rgba(150,225,255,.9)"; ctx.lineWidth = 2;
+    ctx.shadowBlur = 26; ctx.shadowColor = "rgba(90,200,255,.95)";
+    ctx.beginPath(); ctx.arc(cx, earthY, earthR, Math.PI * 1.04, Math.PI * 1.96); ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // thin airglow band just above the surface
+    ctx.strokeStyle = "rgba(120,215,255,.26)"; ctx.lineWidth = 9;
+    ctx.beginPath(); ctx.arc(cx, earthY, earthR + 8, Math.PI * 1.08, Math.PI * 1.92); ctx.stroke();
+
+    // city lights on the night side
+    ctx.save();
+    for (let i = 0; i < 46; i++) {
+      const a = Math.PI * 1.06 + (i / 45) * Math.PI * 0.88;
+      const jitter = ((i * 37) % 11) / 11;
+      const rr = earthR - 3 - jitter * 26;
+      const x = cx + Math.cos(a) * rr, y = earthY + Math.sin(a) * rr;
+      ctx.globalAlpha = 0.16 + 0.34 * Math.abs(Math.sin(t * 0.02 + i));
+      ctx.fillStyle = i % 4 === 0 ? "rgba(255,225,170,1)" : "rgba(255,205,130,1)";
+      ctx.beginPath(); ctx.arc(x, y, 0.9 + jitter, 0, 6.283); ctx.fill();
+    }
     ctx.restore();
   }
 
@@ -480,11 +512,22 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
       const x = baseX + r.drift * ease * W * 0.5;
       const y = (earthY - earthR) - ease * (H * 1.25) + H * 0.06;
 
-      if (t % 2 === 0) r.puffs.push({ x: x + (Math.random() - .5) * 4, y: y + 13, l: 1, s: 2 + Math.random() * 3 });
+      // ion trail: a bright vertical streak that fades behind the vehicle
+      r.path = r.path || [];
+      r.path.push([x, y]); if (r.path.length > 90) r.path.shift();
+      for (let j = 1; j < r.path.length; j++) {
+        const k = j / r.path.length;
+        ctx.strokeStyle = `rgba(120,205,255,${k * 0.3})`;
+        ctx.lineWidth = 1 + k * 1.6;
+        ctx.beginPath(); ctx.moveTo(r.path[j - 1][0], r.path[j - 1][1]);
+        ctx.lineTo(r.path[j][0], r.path[j][1]); ctx.stroke();
+      }
+      // exhaust particles — tight, hot, short-lived
+      r.puffs.push({ x: x + (Math.random() - .5) * 2.4, y: y + 12, l: 1, s: 1.2 + Math.random() * 1.6 });
       for (let j = r.puffs.length - 1; j >= 0; j--) {
-        const p = r.puffs[j]; p.l -= 0.022; p.s += 0.42; p.y += 0.5;
+        const p = r.puffs[j]; p.l -= 0.075; p.s += 0.22; p.y += 1.5;
         if (p.l <= 0) { r.puffs.splice(j, 1); continue; }
-        ctx.fillStyle = `rgba(255,${140 + p.l * 90},${60 + p.l * 60},${p.l * .34})`;
+        ctx.fillStyle = `rgba(255,${170 + p.l * 70},${80 + p.l * 90},${p.l * p.l * .5})`;
         ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, 6.283); ctx.fill();
       }
       // exhaust flame
@@ -549,7 +592,8 @@ document.querySelectorAll(".card").forEach(c => c.addEventListener("pointermove"
 
 /* ===================== live telemetry with count-up ===================== */
 function countTo(el, target) {
-  if (reduced || target < 1) { el.textContent = target.toLocaleString(); return; }
+  // rAF is throttled in background tabs — show the real figure straight away there
+  if (reduced || target < 1 || document.hidden) { el.textContent = target.toLocaleString(); return; }
   const dur = 1400, t0 = performance.now();
   (function step(now) {
     const k = Math.min((now - t0) / dur, 1);
