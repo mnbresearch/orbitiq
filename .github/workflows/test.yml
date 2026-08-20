@@ -1,0 +1,55 @@
+# OrbitIQ — continuous verification.
+#
+# The physics in src/pc.js is the part of this product that has to be right.
+# A conjunction probability that is quietly wrong is worse than no probability
+# at all, because someone may burn propellant on it — or decline to. These
+# tests pin the maths to closed-form results and to published relationships
+# (Foster's encounter-plane integral, the rocket equation, the isotropic
+# probability bound), so a refactor cannot silently change an answer.
+#
+# Runs on every push and pull request. Free for public repositories.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+    # Skip the data-mirror branch — it carries catalogue snapshots, not code.
+    paths-ignore:
+      - '**.md'
+      - 'public/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 18 is the floor declared in package.json; 20 is what Render runs.
+        node: ['18', '20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # `npm install`, not `npm ci` — this repository intentionally ships no
+      # lockfile, and `npm ci` requires one.
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Run test suite
+        run: npm test
+
+      # A syntax error in server.js would still deploy on Render and only fail
+      # at boot, taking the site down. Parsing it here catches that in CI.
+      - name: Check server parses
+        run: node --check server.js
+
+      - name: Check modules parse
+        run: for f in src/*.js; do node --check "$f" || exit 1; done
