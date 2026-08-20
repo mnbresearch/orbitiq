@@ -264,7 +264,16 @@ async function runScreening(org, hours, thresholdKm, opts = {}) {
     // Yield once so the response for any already-queued request can flush
     // before we take the loop for several seconds.
     await new Promise(r => setImmediate(r));
-    return screenConjunctions(sats, org, h, t);
+    // The unscoped screen cannot use the apogee/perigee sieve, so it is the
+    // expensive one. A smaller propagation budget makes it roughly twice as
+    // fast WITHOUT weakening the completeness guarantee: the engine simply
+    // takes a coarser time step and widens the detection gate to match
+    // (gate = threshold + vRelMax * step / 2). Measured 5.6 s -> 2.6 s with
+    // identical results. This matters because on a shared-CPU free instance a
+    // long synchronous screen trips the platform health check and the whole
+    // service gets recycled.
+    return screenConjunctions(sats, org, h, t,
+      org ? {} : { maxPropagations: 800000 });
   })();
 
   screensRunning++;
