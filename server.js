@@ -145,15 +145,20 @@ const CONJ_TTL = 15 * 60 * 1000;
 // Validate, refuse nonsense, say so loudly, and publish the value in /status.
 // Bound for the unscoped all-on-all screen; see the note in runScreening.
 const ALL_ON_ALL_CAP = parseInt(process.env.ORBITIQ_ALL_ON_ALL_CAP || "2500", 10) || 2500;
+let SWEEP_CAP_VALID = true;
 const SWEEP_CAP = (() => {
   const raw = process.env.ORBITIQ_SWEEP_CAP;
   if (raw === undefined || raw === "") return 6000;
   const n = Number(raw);                       // Number("3k") is NaN, unlike parseInt
   if (!Number.isFinite(n) || !Number.isInteger(n) || n < 100) {
+    SWEEP_CAP_VALID = false;
+    // The value itself is not logged. If a secret has been pasted into this
+    // variable by mistake, echoing it into the logs spreads the problem.
     console.error(
-      `\n  ORBITIQ_SWEEP_CAP is set to ${JSON.stringify(raw)}, which is not a valid\n` +
-      "  object count (must be a whole number >= 100). Ignoring it and using 6000.\n" +
-      "  A too-small cap makes every conjunction screen come back empty.\n");
+      `\n  ORBITIQ_SWEEP_CAP is set to a value that is not a valid object count\n` +
+      `  (got ${raw.length} characters; expected a whole number >= 100).\n` +
+      "  Ignoring it and using 6000. A too-small cap silently makes every\n" +
+      "  conjunction screen come back empty.\n");
     return 6000;
   }
   if (n > 20000) { console.warn(`ORBITIQ_SWEEP_CAP=${n} is large; screening may be slow.`); }
@@ -993,9 +998,16 @@ api.get("/status", async (req, res) => {
     mail: mailer.status(),
     fleets: fleet.stats(),
     trends: trend.stats(),
-    // Surfaced so a misconfigured cap is visible rather than silently
-    // turning every screen into a clean sheet.
-    screening: { sweepCap: SWEEP_CAP, sweepCapEnv: process.env.ORBITIQ_SWEEP_CAP ?? null },
+    // Surfaced so a misconfigured cap is visible rather than silently turning
+    // every screen into a clean sheet. The raw env value is deliberately NOT
+    // echoed: /status is public, and if someone has pasted a secret into the
+    // wrong variable, printing it here would publish it. Report only whether
+    // the value was usable.
+    screening: {
+      sweepCap: SWEEP_CAP,
+      sweepCapConfigured: process.env.ORBITIQ_SWEEP_CAP !== undefined && process.env.ORBITIQ_SWEEP_CAP !== "",
+      sweepCapValid: SWEEP_CAP_VALID
+    },
     liveClients: wss.clients.size,
     time: new Date().toISOString()
   });
