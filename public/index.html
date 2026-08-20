@@ -36,6 +36,7 @@
   <nav class="tabs">
     <button class="tab active" data-view="ops">Operations</button>
     <button class="tab" data-view="intel">Intel</button>
+    <button class="tab" data-view="fleet">Fleet</button>
     <button class="tab" data-view="analytics">Analytics</button>
     <button class="tab" data-view="traffic">Traffic</button>
     <button class="tab" data-view="tools">Tools</button>
@@ -273,6 +274,9 @@
 </div>
 
 <!-- analytics view -->
+<!-- v14: fleet operations — registry, encounters, manoeuvre planner, alert policy -->
+<div class="view" id="view-fleet"></div>
+
 <div class="view" id="view-analytics">
   <div class="view-inner">
     <h2 class="viewtitle">Orbital Environment Analytics</h2>
@@ -454,5 +458,19 @@
 })();
 </script>
 <script type="module" src="/js/app.js"></script>
+<script type="module">
+  // v14 operations console. Mounted lazily the first time the Fleet tab is
+  // opened, so it never costs anything for users who don't have a fleet.
+  import { mountOps, onAlert } from "/js/ops.js";
+  let mounted = false;
+  document.querySelectorAll('.tab[data-view="fleet"]').forEach(b =>
+    b.addEventListener("click", () => {
+      if (mounted) return;
+      mounted = true;
+      mountOps(document.getElementById("view-fleet"));
+    }));
+  // Surface pushed conjunction alerts wherever the user happens to be.
+  window.addEventListener("orbitiq:alert", e => onAlert(e.detail));
+</script>
 </body>
 </html>
