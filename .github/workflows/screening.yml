@@ -1,0 +1,97 @@
+# ============================================================
+# OrbitIQ screening worker.
+#
+# Conjunction screening is seconds of uninterruptible SGP4 propagation holding
+# the whole catalogue in memory. Doing that inside the web process on a 512 MB
+# shared-CPU instance stalls the health check and gets the service recycled
+# mid-request. So it runs here instead, and the web service only reads the
+# published result.
+#
+# Cost: nothing. GitHub Actions is free and unlimited for public repositories
+# on standard runners, and this repository is public. The 2,000 minutes/month
+# quota applies only to private repositories, so this cannot consume the
+# allowance the other (private) projects depend on. Note the "runs-on" below is
+# deliberately a standard runner — larger runners ARE billed, even on public
+# repos.
+# ============================================================
+name: Screening
+
+on:
+  schedule:
+    # Every 30 minutes, offset from the data mirror (which runs at :23) so the
+    # two jobs are not competing and we screen data that has just landed.
+    - cron: "7,37 * * * *"
+  workflow_dispatch: {}
+  # Re-screen when the physics changes, so a fix reaches production
+  # immediately rather than at the next scheduled tick.
+  push:
+    branches: [main]
+    paths:
+      - "src/conjunctions.js"
+      - "src/constants.js"
+      - "src/data.js"
+      - "scripts/screen.mjs"
+      - ".github/workflows/screening.yml"
+
+# Never let two screening runs overlap; a late run is better than two at once.
+concurrency:
+  group: orbitiq-screening
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund --omit=dev
+
+      - name: Screen the catalogue
+        env:
+          SCREEN_MAX_OBJECTS: "12000"
+          SCREEN_BUDGET: "6000000"
+        run: node scripts/screen.mjs
+
+      - name: Verify output before publishing
+        run: |
+          test -f out/data/screening/index.json || { echo "::error::no index.json"; exit 1; }
+          python3 - <<'EOF'
+          import json, os, sys
+          d = "out/data/screening"
+          idx = json.load(open(os.path.join(d, "index.json")))
+          if not idx.get("screens"):
+              print("::error::index lists no screens"); sys.exit(1)
+          for s in idx["screens"]:
+              name = f"{s['org'] or 'all'}-{s['hours']}-{s['thresholdKm']}.json"
+              p = os.path.join(d, name)
+              if not os.path.exists(p):
+                  print(f"::error::missing {name}"); sys.exit(1)
+              payload = json.load(open(p))          # must parse
+              if "events" not in payload or "method" not in payload:
+                  print(f"::error::{name} is malformed"); sys.exit(1)
+          print(f"validated {len(idx['screens'])} screens over "
+                f"{idx['screenedPopulation']} objects in {idx['totalMs']}ms")
+          EOF
+
+      - name: Publish to the screening branch
+        run: |
+          cd out
+          git init -b screening
+          git config user.name "orbitiq-screening"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "screening $(date -u +%FT%TZ)"
+          # Force-push a flat history: this branch is a data artefact, not
+          # source, and we do not want it growing the repository forever.
+          git push --force \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            screening
