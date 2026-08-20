@@ -52,6 +52,11 @@ async function send({ to, subject, html, replyTo }) {
   }
 }
 
+/** Send a fully-formed message. Used by the fleet watch for alert mail. */
+export async function sendRaw({ to, subject, html, replyTo }) {
+  return send({ to, subject, html, replyTo });
+}
+
 const shell = (title, inner) => `<!doctype html><html><body style="margin:0;background:#04060c;padding:28px 16px;font-family:-apple-system,Segoe UI,Inter,sans-serif">
 <div style="max-width:560px;margin:0 auto;background:#0b101c;border:1px solid rgba(90,130,200,.22);border-radius:16px;padding:28px 26px;color:#e6edfa">
 <div style="font-size:19px;font-weight:650;letter-spacing:-.01em;margin-bottom:4px">Orbit<span style="color:#38bdf8">IQ</span></div>
