@@ -18,9 +18,11 @@ name: Screening
 
 on:
   schedule:
-    # Every 30 minutes, offset from the data mirror (which runs at :23) so the
-    # two jobs are not competing and we screen data that has just landed.
-    - cron: "7,37 * * * *"
+    # Hourly, offset from the data mirror (which runs at :23) so the two jobs
+    # are not competing and we screen data that has just landed. The catalogue
+    # itself only refreshes every 6 h, so screening more often than this buys
+    # very little and just burns runner time.
+    - cron: "37 * * * *"
   workflow_dispatch: {}
   # Re-screen when the physics changes, so a fix reaches production
   # immediately rather than at the next scheduled tick.
@@ -57,8 +59,8 @@ jobs:
 
       - name: Screen the catalogue
         env:
-          SCREEN_MAX_OBJECTS: "12000"
-          SCREEN_BUDGET: "6000000"
+          SCREEN_MAX_OBJECTS: "6000"
+          SCREEN_BUDGET: "3000000"
         run: node scripts/screen.mjs
 
       - name: Verify output before publishing
