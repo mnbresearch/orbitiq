@@ -34,6 +34,47 @@ app.get("/", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "landing.html")));
 app.get(["/app", "/console"], (req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
 app.use(express.static(PUBLIC_DIR, { index: false }));
 app.use("/vendor/three", express.static(path.join(__dirname, "node_modules", "three", "build")));
+
+// ---------- SEO: robots + sitemap ----------
+// Search engines need to be told this host is indexable and that it belongs to
+// the same organisation as www.mnbresearch.com. The landing page carries the
+// canonical, Open Graph and JSON-LD publisher markup; these two files make the
+// host crawlable in the first place.
+app.get("/robots.txt", (_req, res) => {
+  res.type("text/plain").send([
+    "User-agent: *",
+    "Allow: /$",
+    "Allow: /landing.html",
+    "Allow: /status.html",
+    "Allow: /docs.html",
+    // The application itself is behind auth and has no public content to index.
+    "Disallow: /app",
+    "Disallow: /api/",
+    "Disallow: /login.html",
+    "Disallow: /admin.html",
+    "",
+    "Sitemap: https://orbit.mnbresearch.com/sitemap.xml",
+    ""
+  ].join("\n"));
+});
+
+app.get("/sitemap.xml", (_req, res) => {
+  const base = "https://orbit.mnbresearch.com";
+  const today = new Date().toISOString().slice(0, 10);
+  const pages = [
+    { loc: "/",            pri: "1.0", freq: "weekly"  },
+    { loc: "/docs.html",   pri: "0.6", freq: "monthly" },
+    { loc: "/status.html", pri: "0.4", freq: "daily"   }
+  ];
+  res.type("application/xml").send(
+    `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+    pages.map(p =>
+      `  <url><loc>${base}${p.loc}</loc><lastmod>${today}</lastmod>` +
+      `<changefreq>${p.freq}</changefreq><priority>${p.pri}</priority></url>`
+    ).join("\n") + `\n</urlset>\n`
+  );
+});
+
 app.use("/vendor/satellite", express.static(path.join(__dirname, "node_modules", "satellite.js", "dist")));
 
 const PORT = process.env.PORT || 3000;
