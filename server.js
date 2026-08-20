@@ -4,6 +4,7 @@
 import express from "express";
 import compression from "compression";
 import http from "http";
+import crypto from "crypto";
 import path from "path";
 import { fileURLToPath } from "url";
 import { WebSocketServer } from "ws";
@@ -22,11 +23,17 @@ import * as mailer from "./src/mailer.js";
 import * as fleet from "./src/fleet.js";
 import * as watch from "./src/watch.js";
 import * as pcmod from "./src/pc.js";
+import * as trend from "./src/trend.js";
 import { getSpaceWeather, environmentForLedger } from "./src/spaceweather.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(compression());
+// Render and Cloudflare both front this app, so req.ip is the proxy address
+// unless we say how many hops to trust. Without this every per-IP rate limit
+// below collapses into a single global bucket: one noisy client 429s all
+// anonymous users, and ten bad password attempts lock out every login.
+app.set("trust proxy", 1);
 app.use(express.json({ limit: "100kb" }));
 // v10: the landing page is the front door; the console lives at /app
 const PUBLIC_DIR = path.join(__dirname, "public");
@@ -153,14 +160,82 @@ function capForScreening(sats, org) {
     .map(p => p[1]);
   return mine.concat(rest);
 }
-async function runScreening(org, hours, thresholdKm) {
-  const key = `${org}|${hours}|${thresholdKm}`;
-  const hit = conjCache.get(key);
-  if (hit && Date.now() - hit.at < CONJ_TTL) return { ...hit.result, cached: true };
-  const sats = capForScreening(await getSatellites(), org);
-  const result = screenConjunctions(sats, org, hours, thresholdKm);
+// Screening is the most expensive thing this service does — seconds of
+// uninterruptible synchronous work on a single-core instance. Three problems
+// had to be solved together, because fixing any one alone leaves the hole open:
+//
+//   1. The cache key was built from raw parseFloat values, so `hours=2.9999`,
+//      `2.9998`, ... missed every time while the cache itself grew forever.
+//      Parameters are now snapped to a small grid, which bounds the key space
+//      and makes cache hits the normal case.
+//   2. Identical concurrent requests each ran their own full screen. They now
+//      share one in-flight promise.
+//   3. Distinct concurrent requests could still stack up and monopolise the
+//      loop. Only one screen runs at a time; a stale result is served in
+//      preference to queueing where one exists.
+const SCREEN_HOURS = [1, 3, 6, 12, 24, 48, 96];
+const SCREEN_THRESH = [1, 5, 10, 25, 50, 100];
+const snapTo = (grid, v, fallback) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return grid.reduce((best, g) => (Math.abs(g - n) < Math.abs(best - n) ? g : best), grid[0]);
+};
+export const snapHours = v => snapTo(SCREEN_HOURS, v, 3);
+export const snapThreshold = v => snapTo(SCREEN_THRESH, v, 10);
+
+const CONJ_MAX_ENTRIES = 60;
+const inFlight = new Map();
+let screensRunning = 0;
+
+function cachePut(key, result) {
   conjCache.set(key, { at: Date.now(), result });
-  return result;
+  // Bounded, oldest-first. The map was previously only ever written to.
+  while (conjCache.size > CONJ_MAX_ENTRIES) {
+    const oldest = conjCache.keys().next().value;
+    conjCache.delete(oldest);
+  }
+}
+
+async function runScreening(org, hours, thresholdKm, opts = {}) {
+  const h = snapHours(hours), t = snapThreshold(thresholdKm);
+  const key = `${org}|${h}|${t}`;
+
+  const hit = conjCache.get(key);
+  const fresh = hit && Date.now() - hit.at < CONJ_TTL;
+  if (fresh) return { ...hit.result, cached: true };
+
+  const pending = inFlight.get(key);
+  if (pending) return { ...(await pending), cached: true };
+
+  // Under load, a stale answer beats making the caller wait behind someone
+  // else's screen — and beats blocking the health check.
+  if (screensRunning > 0 && hit) {
+    return { ...hit.result, cached: true, stale: true,
+      note: "Served from the last completed screen while another is in progress." };
+  }
+  if (screensRunning > 0 && opts.neverQueue) {
+    return { events: [], screened: 0, catalogSize: 0, warming: true,
+      note: "First screen for these parameters is still running. Retry shortly." };
+  }
+
+  const job = (async () => {
+    const sats = capForScreening(await getSatellites(), org);
+    // Yield once so the response for any already-queued request can flush
+    // before we take the loop for several seconds.
+    await new Promise(r => setImmediate(r));
+    return screenConjunctions(sats, org, h, t);
+  })();
+
+  screensRunning++;
+  inFlight.set(key, job);
+  try {
+    const result = await job;
+    cachePut(key, result);
+    return result;
+  } finally {
+    screensRunning--;
+    inFlight.delete(key);
+  }
 }
 
 // ---------- core data ----------
@@ -177,7 +252,11 @@ api.get("/satellites", async (req, res) => {
     let out = sats;
     if (org && org !== "all") out = out.filter(s => s.org === org);
     if (q) out = out.filter(s => s.name.toUpperCase().includes(q) || String(s.id) === q);
-    const limit = Math.min(parseInt(req.query.limit) || 20000, 20000);
+    // Defaulted to 20000 — above the catalogue size — so a bare GET serialised
+    // the entire catalogue including each object's full GP block, 10-15 MB of
+    // JSON built synchronously. Callers that genuinely want everything can
+    // still ask, but they have to ask.
+    const limit = Math.min(parseInt(req.query.limit) || 500, 20000);
     res.json({ count: out.length, satellites: out.slice(0, limit) });
   } catch (e) { res.status(502).json({ error: "Orbital data source unavailable", detail: e.message }); }
 });
@@ -214,9 +293,12 @@ api.get("/stats", async (req, res) => {
 api.get("/conjunctions", async (req, res) => {
   try {
     const org = req.query.org && req.query.org !== "all" ? req.query.org : null;
-    const hours = Math.min(parseFloat(req.query.hours) || 3, 12);
-    const threshold = Math.min(parseFloat(req.query.thresholdKm) || 10, 50);
-    res.json(await runScreening(org, hours, threshold));
+    const hours = Math.min(snapHours(req.query.hours || 3), 12);
+    const threshold = Math.min(snapThreshold(req.query.thresholdKm || 10), 50);
+    // An unauthenticated caller may read a cached screen but may not start a
+    // cold one: this route was a 20+ second event-loop lockup for anyone who
+    // asked for the widest window, repeatable at will.
+    res.json(await runScreening(org, hours, threshold, { neverQueue: !req.workspace }));
   } catch (e) { res.status(500).json({ error: "Screening failed", detail: e.message }); }
 });
 
@@ -359,6 +441,10 @@ api.get("/workspace", requireWs, (req, res) => {
 
 api.put("/workspace", requireWs, (req, res) => {
   const ws = store.updateWorkspace(req.workspace.id, req.body || {});
+  if (!ws) return res.status(404).json({ error: "Workspace not found" });
+  // updateWorkspace now rejects unsafe webhook targets; surface that as a 400
+  // rather than wrapping the error object in a success-shaped response.
+  if (ws.error) return res.status(400).json({ error: ws.error });
   const { apiKey, ...safe } = ws;
   res.json({ workspace: safe });
 });
@@ -778,7 +864,17 @@ api.get("/fleet/encounters", requireWs, requirePlan("tracker"), async (req, res)
     });
     // State vectors are stripped from the list view — large, and only
     // needed when planning a specific manoeuvre.
-    const encounters = (out.assessed || []).map(({ state, ...rest }) => rest);
+    // Each screen is an observation of the same physical encounter. Recording
+    // them lets us say whether a close approach is tightening — the question
+    // operators actually ask, and one that only became answerable once the
+    // reported miss distance stopped varying with the sampling grid.
+    const encounters = (out.assessed || []).map(({ state, ...rest }) => ({
+      ...rest,
+      trend: trend.observe(req.workspace.id, {
+        idA: rest.primary?.id, idB: rest.secondary?.id,
+        tca: rest.tca, missKm: rest.missKm, pc: rest.pc
+      })
+    }));
     res.json({
       fleetSize: out.fleetSize, screened: out.screened, catalogSize: out.catalogSize,
       note: out.note, encounters, generatedAt: new Date().toISOString()
@@ -821,7 +917,7 @@ api.post("/fleet/watch/run", requireWs, requirePlan("tracker"), async (req, res)
   try {
     const sats = await getSatellites();
     const r = await watch.runWatch(req.workspace.id, req.workspace, sats, screenConjunctions, {
-      onEvent: p => { try { broadcast({ type: "conjunction.alert", data: p }); } catch { /* ws optional */ } }
+      onEvent: p => { try { broadcast("conjunction.alert", p); } catch { /* ws optional */ } }
     });
     res.json({ ok: true, ...r });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -860,6 +956,7 @@ api.get("/status", async (req, res) => {
     backup: backup.status(),
     mail: mailer.status(),
     fleets: fleet.stats(),
+    trends: trend.stats(),
     liveClients: wss.clients.size,
     time: new Date().toISOString()
   });
@@ -933,7 +1030,11 @@ app.get("/r/:token", (req, res) => {
   const share = store.getShare(req.params.token);
   if (!share) return res.status(404).type("html").send("<body style='background:#070b14;color:#8fa3c8;font-family:sans-serif;display:grid;place-items:center;height:100vh'><div>Report link not found or revoked.</div></body>");
   const rep = ledger.weeklyReport(share.org, share.orgName);
-  const esc = t => String(t).replace(/[<>&]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
+    // Escapes quotes too: this output is interpolated into href="..." with a
+  // value derived from the Host header, so a missing quote escape is a
+  // reflected XSS on an unauthenticated page.
+  const esc = t => String(t).replace(/[<>&"']/g, c =>
+    ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[c]));
   const risk = rep.risk.current;
   res.type("html").send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Weekly Fleet Intelligence — ${esc(share.orgName)} · OrbitIQ</title>
@@ -1058,7 +1159,7 @@ async function intelligenceSweep() {
         const ws = store.getWorkspace(wsId);
         if (!ws) continue;
         const r = await watch.runWatch(wsId, ws, sats, screenConjunctions, {
-          onEvent: p => { try { broadcast({ type: "conjunction.alert", data: p }); } catch {} }
+          onEvent: p => { try { broadcast("conjunction.alert", p); } catch {} }
         });
         if (r.notified) console.log(`watch: ${wsId} — ${r.notified} alert(s) from ${r.assessed} encounter(s)`);
       } catch (e) { console.error("watch failed for", wsId, e.message); }
@@ -1081,11 +1182,52 @@ async function intelligenceSweep() {
   } catch (e) { console.error("intelligence sweep failed:", e.message); }
 }
 // best-effort final backup when Render recycles the instance
-process.on("SIGTERM", async () => { try { await backup.backup(); } finally { process.exit(0); } });
+process.on("SIGTERM", async () => {
+  // Flush the store before backing up, otherwise anything written in the last
+  // few hundred ms is lost — and with the old unbounded debounce, potentially
+  // everything since boot.
+  try { store.flushStore?.(); } catch { /* best effort */ }
+  try { fleet.flush?.(); } catch { /* best effort */ }
+  try { trend.flush?.(); } catch { /* best effort */ }
+  try { await backup.backup(); } finally { process.exit(0); }
+});
 
-setInterval(scanAllWorkspaces, 30 * 60 * 1000);
-setInterval(snapshotPopulation, 6 * 60 * 60 * 1000);
-setInterval(intelligenceSweep, 6 * 60 * 60 * 1000);
+// An unhandled rejection terminates the process by default on Node 20+, and
+// several public async routes had code paths outside their try/catch. Log and
+// keep serving rather than dropping every in-flight request.
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandled rejection:", reason?.stack || reason);
+});
+
+// setInterval does not await an async callback, so a run that takes longer
+// than its period starts overlapping copies of itself — each holding its own
+// catalogue and screening state, on a 512 MB instance. Past a dozen or so
+// workspaces scanAllWorkspaces genuinely does exceed 30 minutes. This runs
+// each job on a self-scheduling timer that only re-arms once the previous
+// pass has finished, and logs a skip rather than silently piling up.
+function everyNonOverlapping(fn, periodMs, label) {
+  let running = false;
+  const tick = async () => {
+    if (running) { console.warn(`${label}: previous run still in progress, skipping`); return; }
+    running = true;
+    const t0 = Date.now();
+    try { await fn(); }
+    catch (e) { console.error(`${label} failed:`, e?.message || e); }
+    finally {
+      running = false;
+      const ms = Date.now() - t0;
+      if (ms > periodMs) console.warn(`${label}: took ${Math.round(ms / 1000)}s, longer than its ${Math.round(periodMs / 1000)}s period`);
+    }
+  };
+  const timer = setInterval(tick, periodMs);
+  timer.unref?.();
+  return timer;
+}
+
+everyNonOverlapping(scanAllWorkspaces, 30 * 60 * 1000, "workspace scan");
+everyNonOverlapping(async () => { const n = trend.prune(); if (n) console.log(`trend: pruned ${n} past encounters`); }, 6 * 60 * 60 * 1000, "trend prune");
+everyNonOverlapping(snapshotPopulation, 6 * 60 * 60 * 1000, "population snapshot");
+everyNonOverlapping(intelligenceSweep, 6 * 60 * 60 * 1000, "intelligence sweep");
 // stagger heavy boot work so the instance passes health checks first
 setTimeout(snapshotPopulation, 90 * 1000);
 setTimeout(intelligenceSweep, 5 * 60 * 1000);
@@ -1104,10 +1246,25 @@ if (created && !process.env.ORBITIQ_ADMIN_KEY) {
 // v9: bootstrap the admin login (email/password → full-access session).
 // Override via ORBITIQ_ADMIN_EMAIL / ORBITIQ_ADMIN_PASSWORD; change the
 // password from the UI after first sign-in.
-auth.bootstrapAdmin(
-  process.env.ORBITIQ_ADMIN_EMAIL || "mridulnanda2004@gmail.com",
-  process.env.ORBITIQ_ADMIN_PASSWORD || "Mridulnanda9",
-  admin.id
-);
+// The admin password must come from the environment. It used to fall back to
+// a literal in this file, which meant any deployment that forgot to set the
+// env var shipped with a publicly-known admin login — and logging in as admin
+// returns the admin API key, which is full control of every workspace. If it
+// is unset we mint a random one and print it once, so a misconfigured deploy
+// is locked rather than wide open.
+{
+  const adminEmail = process.env.ORBITIQ_ADMIN_EMAIL;
+  let adminPass = process.env.ORBITIQ_ADMIN_PASSWORD;
+  if (!adminEmail || !adminPass) {
+    adminPass = crypto.randomBytes(18).toString("base64url");
+    console.warn(
+      "\n  ORBITIQ_ADMIN_EMAIL / ORBITIQ_ADMIN_PASSWORD are not both set.\n" +
+      "  A random admin password has been generated for this boot only:\n\n" +
+      `      email:    ${adminEmail || "admin@orbitiq.local"}\n` +
+      `      password: ${adminPass}\n\n` +
+      "  It changes on every restart. Set both env vars to make it stable.\n");
+  }
+  auth.bootstrapAdmin(adminEmail || "admin@orbitiq.local", adminPass, admin.id);
+}
 
 server.listen(PORT, () => console.log(`OrbitIQ v8 listening on http://localhost:${PORT}  (API: /api/v1, WS: /ws)`));
