@@ -5,7 +5,7 @@
 //   trends() — daily aggregates from the detection archive:
 //     the longitudinal view only the ledger can provide
 // ============================================================
-const MU = 398600.4418, RE = 6371;
+import { EARTH_R_KM as RE, MU_KM3_S2 as MU } from "./constants.js";
 
 export function constellation(org, sats) {
   const fleet = sats.filter(s => s.org === org && s.noradType === "PAYLOAD");

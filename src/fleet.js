@@ -16,6 +16,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { validateWebhookUrl, safeFetch } from "./safeurl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "..", "data");
@@ -25,6 +26,15 @@ let db = { assets: {}, policy: {}, delivered: {}, webhookLog: {} };
 try {
   db = { ...db, ...JSON.parse(fs.readFileSync(FILE, "utf8")) };
 } catch { /* first run */ }
+
+// Keyed by workspace id and NORAD id, both of which originate in requests.
+// See the note in store.js — "__proto__" must not resolve to Object.prototype.
+const nullMap = o => Object.assign(Object.create(null), o || {});
+db.assets     = nullMap(db.assets);
+db.policy     = nullMap(db.policy);
+db.delivered  = nullMap(db.delivered);
+db.webhookLog = nullMap(db.webhookLog);
+for (const k of Object.keys(db.assets)) db.assets[k] = nullMap(db.assets[k]);
 
 let dirty = false;
 function save() { dirty = true; }
@@ -151,15 +161,12 @@ export function setPolicy(wsId, patch = {}) {
     const u = String(patch.webhookUrl || "").trim();
     if (!u) { next.webhookUrl = null; next.webhookSecret = null; }
     else {
-      let parsed;
-      try { parsed = new URL(u); } catch { return { error: "webhookUrl must be a valid URL" }; }
-      if (parsed.protocol !== "https:") return { error: "webhookUrl must use https" };
-      // Refuse to post to anything on the local network.
-      if (/^(localhost|127\.|0\.|10\.|192\.168\.|169\.254\.|\[?::1)/i.test(parsed.hostname)
-          || /^172\.(1[6-9]|2\d|3[01])\./.test(parsed.hostname)) {
-        return { error: "webhookUrl may not point at a private or loopback address" };
-      }
-      next.webhookUrl = parsed.toString();
+      // The old check was a string regex on the hostname, which missed
+      // integer and hex IPv4 forms (2130706433 and 0x7f000001 are both
+      // 127.0.0.1) and IPv4-mapped IPv6. Numeric range check instead.
+      const v = validateWebhookUrl(u);
+      if (v.error) return { error: `webhookUrl ${v.error[0].toLowerCase()}${v.error.slice(1)}` };
+      next.webhookUrl = v.url;
       if (!next.webhookSecret) next.webhookSecret = "whsec_" + crypto.randomBytes(20).toString("hex");
     }
   }
@@ -169,7 +176,18 @@ export function setPolicy(wsId, patch = {}) {
 
   db.policy[wsId] = next;
   save();
-  return { ok: true, policy: next };
+  // The secret is returned only on the write that actually created or rotated
+  // it. Previously the whole object came back every time, so a PUT changing
+  // an unrelated threshold re-disclosed the standing HMAC key and the masking
+  // on the GET route was pointless.
+  const created = !cur.webhookSecret && !!next.webhookSecret;
+  const rotated = !!patch.rotateWebhookSecret && !!next.webhookSecret;
+  const revealed = created || rotated;
+  const safe = { ...next };
+  if (!revealed && safe.webhookSecret) {
+    safe.webhookSecret = safe.webhookSecret.slice(0, 12) + "\u2026";
+  }
+  return { ok: true, policy: safe, secretRevealed: revealed };
 }
 
 // ───────────────────────── notification ledger ─────────────────────────
@@ -244,7 +262,10 @@ export async function deliverWebhook(policy, payload, wsId) {
   const sig = crypto.createHmac("sha256", policy.webhookSecret || "")
     .update(`${ts}.${body}`).digest("hex");
   try {
-    const r = await fetch(policy.webhookUrl, {
+    // safeFetch re-validates every redirect hop. Plain fetch follows
+    // redirects by default, so a host that passed validation could answer
+    // 302 and send this POST to an internal address instead.
+    const r = await safeFetch(policy.webhookUrl, {
       method: "POST",
       signal: AbortSignal.timeout(8000),
       headers: {
@@ -255,6 +276,10 @@ export async function deliverWebhook(policy, payload, wsId) {
       },
       body
     });
+    if (r.error) {
+      logWebhook(wsId, { at: new Date().toISOString(), status: 0, ok: false, error: r.error });
+      return { ok: false, error: r.error };
+    }
     logWebhook(wsId, { at: new Date().toISOString(), status: r.status, ok: r.ok });
     return { ok: r.ok, status: r.status };
   } catch (e) {

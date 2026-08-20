@@ -18,7 +18,7 @@
 // ============================================================
 
 const MU = 398600.4418;      // km^3/s^2
-const EARTH_R = 6378.137;    // km
+import { EARTH_R_KM as EARTH_R } from "./constants.js";
 
 // ---------- vector helpers ----------
 const sub = (a, b) => ({ x: a.x-b.x, y: a.y-b.y, z: a.z-b.z });

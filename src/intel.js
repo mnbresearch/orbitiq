@@ -5,7 +5,8 @@
 // ============================================================
 import * as satellite from "satellite.js";
 
-const MU = 398600.4418, RE = 6371, C_KM_S = 299792.458;
+import { EARTH_R_KM as RE, MU_KM3_S2 as MU } from "./constants.js";
+const C_KM_S = 299792.458;
 
 const rec = s => { try { return satellite.json2satrec(s.gp); } catch { return null; } };
 const posVel = (r, t) => { try { const pv = satellite.propagate(r, t); return pv?.position && !Number.isNaN(pv.position.x) ? pv : null; } catch { return null; } };

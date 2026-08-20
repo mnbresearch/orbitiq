@@ -88,7 +88,7 @@ export function contactPlan(sat, hours = 24, minElDeg = 5, stations = GROUND_NET
 }
 
 // ---------- re-entry projection ----------
-const MU = 398600.4418, RE = 6371;
+import { EARTH_R_KM as RE, MU_KM3_S2 as MU } from "./constants.js";
 export function reentryEstimate(s) {
   const n = s.meanMotion;
   if (!n || n < 10) return null; // LEO drag regime only

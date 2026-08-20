@@ -15,7 +15,7 @@ import * as fleet from "./fleet.js";
 import * as pcmod from "./pc.js";
 import * as mailer from "./mailer.js";
 
-const EARTH_R = 6378.137;
+import { EARTH_R_KM as EARTH_R } from "./constants.js";
 
 // ─────────────────── element-set age ───────────────────
 /** Age of a TLE/GP element set in days. Drives the covariance model. */
@@ -109,7 +109,12 @@ export function screenFleet(wsId, sats, screenFn, opts = {}) {
     if (!a) continue;
     a.asset = asset ? { noradId: asset.noradId, name: asset.name, massKg: asset.massKg,
                         ispS: asset.ispS, manoeuvrable: asset.manoeuvrable } : null;
-    a.missKm = ev.missKm ?? a.missKm;
+    // Deliberately NOT overwriting a.missKm with ev.missKm here. The screener
+    // and the assessment both compute a miss distance; the assessment's comes
+    // from the state vectors at the refined TCA and is the one the probability
+    // was actually derived from. Overwriting it made missKm and ric.rangeKm
+    // disagree in the same payload, and the alert email printed both.
+    a.screenedMissKm = ev.missKm ?? null;
     assessed.push(a);
   }
   assessed.sort((x, y) => y.pc - x.pc);
@@ -224,9 +229,14 @@ export async function runWatch(wsId, ws, sats, screenFn, deps = {}) {
       generatedAt: new Date().toISOString()
     };
 
-    if (policy.email && ws?.email && mailer.enabled()) {
+    // `ws.email` does not exist on a workspace record and never did, so this
+    // branch was unreachable and the Operator-tier email escalation silently
+    // did nothing. The owning address comes from the auth user; policy.email
+    // may also carry an explicit override.
+    const to = policy.notifyEmail || ws?.ownerEmail || deps.ownerEmail || null;
+    if (policy.email && to && mailer.enabled()) {
       await mailer.sendRaw({
-        to: ws.email,
+        to,
         subject: `OrbitIQ ${a.pcBand}: ${a.primary.name} × ${a.secondary.name} in ${a.leadHours.toFixed(0)}h`,
         html: alertEmailHtml(ws, a, plan)
       }).catch(() => {});

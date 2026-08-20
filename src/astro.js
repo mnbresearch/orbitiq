@@ -1,6 +1,6 @@
 // OrbitIQ astrodynamics toolbox — first-order engineering estimates.
 const MU = 398600.4418;   // km^3/s^2
-const R = 6378.137;       // equatorial radius km
+import { EARTH_R_KM as R } from "./constants.js";
 const OMEGA_E = 7.2921159e-5; // rad/s earth rotation
 
 // ---------- Hohmann transfer with combined plane change ----------

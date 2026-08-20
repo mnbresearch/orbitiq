@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { fileURLToPath } from "url";
+import { validateWebhookUrl } from "./safeurl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const FILE = path.join(__dirname, "..", "data", "store.json");
@@ -12,13 +13,49 @@ const HISTORY_FILE = path.join(__dirname, "..", "data", "elements-history.json")
 let db = { workspaces: {}, alerts: {}, snapshots: [], usage: {}, shares: {} };
 try { db = { ...db, ...JSON.parse(fs.readFileSync(FILE, "utf8")) }; } catch { /* fresh */ }
 
+// These tables are indexed by values that arrive straight from the URL and the
+// request body: /r/:token, /admin/workspaces/:id/plan, workspace ids. On a
+// normal object the key "__proto__" resolves to Object.prototype — truthy, so
+// existence guards pass — and the subsequent write pollutes every object in
+// the process. Null-prototype maps make those keys ordinary, absent entries.
+// Rebuilt rather than mutated because JSON.parse produces normal objects.
+const nullMap = o => Object.assign(Object.create(null), o || {});
+db.workspaces = nullMap(db.workspaces);
+db.alerts     = nullMap(db.alerts);
+db.usage      = nullMap(db.usage);
+db.shares     = nullMap(db.shares);
+
 let saveTimer = null;
-function save() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try { fs.writeFileSync(FILE, JSON.stringify(db)); } catch (e) { console.error("store save failed:", e.message); }
-  }, 300);
+let firstDirtyAt = 0;
+const SAVE_DEBOUNCE_MS = 300;
+const SAVE_MAX_DELAY_MS = 5000;
+
+function writeNow() {
+  clearTimeout(saveTimer); saveTimer = null; firstDirtyAt = 0;
+  try {
+    // Write to a sibling then rename, so a crash mid-write cannot leave a
+    // truncated store.json that fails to parse on the next boot.
+    const tmp = FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(db));
+    fs.renameSync(tmp, FILE);
+  } catch (e) { console.error("store save failed:", e.message); }
 }
+
+function save() {
+  // The debounce used to be unconditional, which meant a steady stream of
+  // writes (recordUsage runs on every authenticated request) reset the timer
+  // forever and nothing was ever persisted — workspaces, alerts and shares
+  // were silently lost on restart. The max-delay floor guarantees a write.
+  const now = Date.now();
+  if (!firstDirtyAt) firstDirtyAt = now;
+  if (now - firstDirtyAt >= SAVE_MAX_DELAY_MS) return writeNow();
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(writeNow, SAVE_DEBOUNCE_MS);
+  saveTimer.unref?.();
+}
+
+/** Flush synchronously — used on shutdown so nothing in flight is lost. */
+export function flushStore() { if (firstDirtyAt || saveTimer) writeNow(); }
 
 // ---------- workspaces ----------
 export function createWorkspace(name, org, role = "member", fixedKey = null) {
@@ -160,7 +197,18 @@ export function rotateKey(id) {
 }
 export function updateWorkspace(id, patch) {
   const w = db.workspaces[id]; if (!w) return null;
-  if (patch.webhook !== undefined) w.webhook = patch.webhook ? String(patch.webhook).slice(0, 300) : null;
+  if (patch.webhook !== undefined) {
+    // This used to store whatever it was handed and the scanner POSTed alert
+    // JSON to it. Creating a workspace needs no credential, so that was an
+    // unauthenticated SSRF into the cloud metadata endpoint and any internal
+    // service. Same validator the v14 fleet policy uses.
+    if (!patch.webhook) w.webhook = null;
+    else {
+      const v = validateWebhookUrl(patch.webhook);
+      if (v.error) return { error: `webhook: ${v.error}` };
+      w.webhook = v.url;
+    }
+  }
   if (patch.org !== undefined) w.org = patch.org || null;
   if (patch.screening) {
     w.screening.hours = Math.min(Math.max(parseFloat(patch.screening.hours) || 3, 1), 6);
