@@ -212,6 +212,40 @@ const CONJ_MAX_ENTRIES = 60;
 const inFlight = new Map();
 let screensRunning = 0;
 
+// Screening now happens off the request path, on a GitHub Actions runner that
+// publishes static JSON (see .github/workflows/screening.yml). The web service
+// prefers that file over computing anything itself: it is the same engine over
+// a LARGER population than this instance could ever hold, and reading it costs
+// a fetch instead of seconds of blocked event loop.
+const SCREEN_BASE = process.env.ORBITIQ_SCREEN_BASE ||
+  "https://raw.githubusercontent.com/mnbresearch/orbitiq/screening/data/screening";
+let screenFeedOk = null;      // null = untried, true/false = last outcome
+let screenFeedAt = 0;
+
+async function fetchPublishedScreen(org, hours, thresholdKm) {
+  const name = `${org || "all"}-${hours}-${thresholdKm}.json`;
+  try {
+    const r = await fetch(`${SCREEN_BASE}/${name}`, {
+      signal: AbortSignal.timeout(8000),
+      headers: { "User-Agent": "OrbitIQ/15" }
+    });
+    if (!r.ok) { screenFeedOk = false; screenFeedAt = Date.now(); return null; }
+    const j = await r.json();
+    if (!j || !Array.isArray(j.events)) { screenFeedOk = false; return null; }
+    screenFeedOk = true; screenFeedAt = Date.now();
+    return j;
+  } catch {
+    screenFeedOk = false; screenFeedAt = Date.now();
+    return null;
+  }
+}
+
+export const screenFeedStatus = () => ({
+  base: SCREEN_BASE,
+  reachable: screenFeedOk,
+  lastCheck: screenFeedAt ? new Date(screenFeedAt).toISOString() : null
+});
+
 function cachePut(key, result) {
   conjCache.set(key, { at: Date.now(), result });
   // Bounded, oldest-first. The map was previously only ever written to.
@@ -231,6 +265,15 @@ async function runScreening(org, hours, thresholdKm, opts = {}) {
 
   const pending = inFlight.get(key);
   if (pending) return { ...(await pending), cached: true };
+
+  // Prefer the precomputed screen. This is what keeps the free instance alive:
+  // a published result costs one HTTP fetch, where computing one costs seconds
+  // of blocked event loop and enough memory to get the process recycled.
+  const published = await fetchPublishedScreen(org, h, t);
+  if (published) {
+    cachePut(key, published);
+    return { ...published, cached: false };
+  }
 
   // A stale answer always beats making the caller wait.
   if (hit && (screensRunning > 0 || opts.neverQueue)) {
@@ -1013,6 +1056,7 @@ api.get("/status", async (req, res) => {
     // wrong variable, printing it here would publish it. Report only whether
     // the value was usable.
     screening: {
+      feed: screenFeedStatus(),
       sweepCap: SWEEP_CAP,
       sweepCapConfigured: process.env.ORBITIQ_SWEEP_CAP !== undefined && process.env.ORBITIQ_SWEEP_CAP !== "",
       sweepCapValid: SWEEP_CAP_VALID
