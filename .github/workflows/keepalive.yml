@@ -1,0 +1,128 @@
+# ============================================================
+# OrbitIQ keep-alive.
+#
+# Render free web services spin down after 15 minutes without a request and
+# take ~50 s to wake, so the first visitor after a quiet spell waits nearly a
+# minute. This pings the service so it stays warm during the hours people
+# actually visit.
+#
+# ── The budget, which is the whole point ────────────────────
+# Render grants 750 free instance hours per WORKSPACE per calendar month.
+# Spun-down time costs nothing; running time is what counts. Exceed 750 and
+# every free service in the workspace is SUSPENDED until the month rolls over.
+#
+# That makes round-the-clock pinging a trap:
+#
+#     24 h x 31 days = 744 h        99.2% of the quota, 6 h of margin
+#
+# Six hours is nothing. A couple of redeploys (which briefly run the old and
+# new instance together), one manual restart, or adding any second free
+# service to the workspace and the quota is gone — mid-month, without warning,
+# taking the site down until the 1st.
+#
+# So this deliberately does NOT run 24/7. It keeps the service warm across a
+# daily window and lets it sleep the rest of the time:
+#
+#     17 h x 31 days = 527 h        70% of the quota, 223 h of margin
+#
+# The window below is 03:00-19:59 UTC, which is 08:30-01:29 IST — morning
+# through late evening in India, and it also covers European daytime and the
+# US morning. Outside it the service sleeps; a visitor arriving then simply
+# waits the ~50 s wake-up, exactly as today.
+#
+# To widen or narrow it, change the hour range in the cron below and re-read
+# the arithmetic in the "Report the budget" step, which recomputes it for you.
+#
+# Cost on GitHub's side: nothing. This repository is public, and public repos
+# get unlimited Actions minutes on standard runners — the 2,000-minute monthly
+# quota applies only to private repositories, so this cannot eat into what
+# other (private) projects depend on.
+# ============================================================
+name: Keep-alive
+
+on:
+  schedule:
+    # Every 10 minutes, but only between 03:00 and 19:59 UTC.
+    # Spin-down is 15 minutes, so a 10-minute cadence leaves headroom for
+    # GitHub's scheduler, which routinely runs cron jobs several minutes late
+    # under load and occasionally skips a tick entirely.
+    - cron: "*/10 3-19 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: orbitiq-keepalive
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Ping the service
+        env:
+          URL: https://orbit.mnbresearch.com/api/health
+        run: |
+          # /api/health is deliberate: it is the cheapest endpoint on the
+          # service. It does no screening, touches no catalogue, and allocates
+          # nothing — so keeping the instance warm costs the instance nothing.
+          ping_once () {
+            code=$(curl -s -o /tmp/body -w "%{http_code}" --max-time 90 \
+                     -A "OrbitIQ-keepalive/1 (github.com/${{ github.repository }})" \
+                     "$URL" || echo "000")
+            echo "$(date -u +%H:%M:%S) -> HTTP $code"
+            [ "$code" = "200" ]
+          }
+
+          # A cold instance takes ~50 s to wake, and the first request is the
+          # one that pays for it. Retry so a wake-up is not counted as failure.
+          ok=0
+          for attempt in 1 2 3; do
+            if ping_once; then ok=1; break; fi
+            echo "  cold or unhealthy, waiting before retry $attempt"
+            sleep 30
+          done
+
+          # A second ping five minutes later. GitHub's scheduler is not
+          # punctual; if the next run slips past the 15-minute spin-down this
+          # bridges the gap on its own.
+          sleep 300
+          ping_once || echo "::warning::follow-up ping did not return 200"
+
+          if [ "$ok" != "1" ]; then
+            echo "::warning::service did not return 200 after three attempts"
+            head -c 300 /tmp/body || true
+          fi
+
+      - name: Report the budget
+        if: always()
+        run: |
+          python3 - <<'EOF'
+          import calendar, datetime
+          # Recomputed every run so the numbers in the header can never drift
+          # away from the schedule that is actually configured above.
+          START_H, END_H = 3, 19          # inclusive cron hour range
+          QUOTA = 750                     # Render free instance-hours / workspace / month
+
+          hours_per_day = END_H - START_H + 1
+          now = datetime.datetime.now(datetime.timezone.utc)
+          days = calendar.monthrange(now.year, now.month)[1]
+          projected = hours_per_day * days
+          pct = projected / QUOTA * 100
+
+          print(f"window          : {START_H:02d}:00-{END_H:02d}:59 UTC ({hours_per_day} h/day)")
+          print(f"days this month : {days}")
+          print(f"projected usage : {projected} h of {QUOTA} h  ({pct:.0f}%)")
+          print(f"margin          : {QUOTA - projected} h")
+
+          if projected > QUOTA * 0.85:
+              print("::warning::projected usage is above 85% of the free quota. "
+                    "Redeploys and organic traffic add hours on top of this. "
+                    "Narrow the cron hour range in this workflow.")
+          if projected >= QUOTA:
+              print("::error::this schedule alone would exhaust the free quota and "
+                    "suspend the service before month end.")
+              raise SystemExit(1)
+          EOF
