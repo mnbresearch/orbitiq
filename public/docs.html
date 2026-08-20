@@ -15,7 +15,7 @@
   h2 { font-family:"Inter",sans-serif; font-size:13.5px; letter-spacing:-0.005em; color:var(--text); margin:38px 0 12px; font-weight:600; }
   .ep { background:var(--panel); border:1px solid var(--stroke); border-radius:12px; padding:14px 18px; margin-bottom:10px; }
   .m { display:inline-block; width:52px; font-weight:600; }
-  .m.get { color:var(--mint); } .m.post { color:var(--accent); } .m.put { color:#fbbf24; }
+  .m.get { color:var(--mint); } .m.post { color:var(--accent); } .m.put { color:#fbbf24; } .m.del { color:#f87171; }
   .path { color:#fff; }
   .d { color:var(--dim); margin-top:4px; font-size:12px; }
   code, pre { background:#060a15; border:1px solid var(--stroke); border-radius:8px; font-family:inherit; }
@@ -97,11 +97,26 @@ curl {host}/api/v1/alerts -H "X-API-Key: oiq_…"</pre>
   <div class="ep"><span class="m get">GET</span><span class="path">/export/fleet.csv</span><span class="auth">Operator</span><div class="d">Fleet CSV annotated with perigee/apogee and lifetime projections.</div></div>
   <div class="ep"><span class="m get">GET</span><span class="path">/export/ledger.csv</span><span class="auth">Operator</span><div class="d">The detection archive as CSV — audit-ready, timestamped at detection.</div></div>
 
+  <h2>Fleet operations <span class="auth">v14</span></h2>
+  <div class="d" style="margin:-6px 0 14px">Register the spacecraft you actually fly, and OrbitIQ screens them on every sweep, assesses each encounter with a Foster probability, and tells you what a burn would buy you. A fleet is keyed by NORAD ID and carries the physical properties the maths needs: mass, I<sub>sp</sub>, and hard-body radius.</div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/fleet/assets</span><div class="d">Your registered spacecraft. Readable on any plan.</div></div>
+  <div class="ep"><span class="m post">POST</span><span class="path">/fleet/assets</span><span class="auth">Tracker</span><div class="d">Register or update a spacecraft. Body: <code>noradId</code> (required), <code>name</code>, <code>massKg</code>, <code>ispS</code>, <code>radiusM</code>, <code>manoeuvrable</code>, <code>notes</code>. Out-of-range values are clamped and the response reports every adjustment in <code>adjusted[]</code> rather than silently storing a different number than you sent. Limit 25 assets on Tracker, 500 on Operator and above.</div></div>
+  <div class="ep"><span class="m del">DELETE</span><span class="path">/fleet/assets/:noradId</span><span class="auth">Tracker</span><div class="d">Remove a spacecraft from the fleet.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/fleet/encounters</span><span class="auth">Tracker</span><div class="d">Assessed close approaches for your fleet, your spacecraft always oriented as the primary. Params: <code>hours</code> (≤96), <code>thresholdKm</code> (≤100). Each encounter carries <code>pc</code>, <code>pcBand</code>, RIC miss components, encounter-plane geometry, the covariance actually used, and the caveat that applies to it.</div></div>
+  <div class="ep"><span class="m post">POST</span><span class="path">/fleet/manoeuvre</span><span class="auth">Operator</span><div class="d">Manoeuvre options for one encounter. Body: <code>primaryId</code> (must be in your fleet), <code>secondaryId</code>, <code>targetMissKm</code>. Solves the required along-track shift <em>in the encounter plane</em> and returns &Delta;v, propellant mass and residual Pc for several lead times. When the geometry makes a tangential burn ineffective — head-on and overtaking encounters both are — it reports <code>alongTrackEffectiveness</code> near zero, returns <code>deltaVms: null</code>, and recommends a radial or cross-track burn instead of quoting a number it cannot justify.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/assess</span><span class="auth">Operator</span><div class="d">Assess an arbitrary pair by hand — for checking a CDM you received elsewhere. Params: <code>a</code>, <code>b</code> (NORAD IDs), optional <code>hbrM</code> (combined hard-body radius, default 20 m).</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/fleet/policy</span> · <span class="m put">PUT</span><span class="path">/fleet/policy</span><span class="auth">Tracker to write</span><div class="d">The thresholds at which OrbitIQ may interrupt your day: <code>pcThreshold</code>, <code>missThresholdKm</code>, <code>leadHoursMin</code>, <code>email</code>, <code>webhookUrl</code>, <code>quietHours</code>, <code>digestWeekly</code>. Webhook URLs must be https and may not resolve to private, loopback or link-local addresses. The signing secret is returned in full only on the write that creates or rotates it — copy it then; afterwards it is masked.</div></div>
+  <div class="ep"><span class="m post">POST</span><span class="path">/fleet/watch/run</span><span class="auth">Tracker</span><div class="d">Run the watch immediately rather than waiting for the next sweep.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/fleet/webhook-log</span><span class="auth">Tracker</span><div class="d">Last 25 webhook delivery attempts with status codes — so a silent integration is diagnosable.</div></div>
+
+  <h2>Webhook signatures</h2>
+  <div class="d" style="margin-bottom:14px">Every webhook is signed so you can verify it came from us. The header <code>OrbitIQ-Signature</code> carries <code>v1=&lt;hex&gt;</code>, an HMAC-SHA256 over <code>&#96;${timestamp}.${body}&#96;</code> keyed with your webhook secret, where <code>timestamp</code> is the <code>OrbitIQ-Timestamp</code> header. This is the same construction Stripe uses, so you can verify it without inventing a scheme. Reject anything whose timestamp is older than a few minutes.</div>
+
   <h2>WebSocket</h2>
-  <div class="ep"><span class="m get">WS</span><span class="path">/ws</span><div class="d">Live push. Messages: <code>{type:"hello"}</code> on connect, <code>{type:"alerts", payload:{workspaceId, count, top[]}}</code> when background scans find new events.</div></div>
+  <div class="ep"><span class="m get">WS</span><span class="path">/ws</span><div class="d">Live push. Messages: <code>{type:"hello"}</code> on connect, <code>{type:"alerts", payload:{workspaceId, count, top[]}}</code> when background scans find new events, and <code>{type:"conjunction.alert", data:{...}}</code> when a fleet encounter clears your alert policy.</div></div>
 
   <h2>Data honesty</h2>
-  <div class="d" style="margin-bottom:40px">Positions derive from public GP elements (km-level uncertainty). Suitable for monitoring, screening and triage — not operational collision avoidance. Sources: CelesTrak, The Space Devs. Background scans run every 30 minutes.</div>
+  <div class="d" style="margin-bottom:40px">Positions derive from public GP elements (km-level uncertainty). Suitable for monitoring, screening and triage — not operational collision avoidance. Sources: CelesTrak, The Space Devs. Background scans run every 30 minutes. Probabilities use Foster&rsquo;s encounter-plane method, but public GP elements carry <em>no covariance</em> — ours is modelled from element-set age and object class, and every assessment says so in its <code>caveat</code>. Treat the band, not the digits, as the signal; for a real conjunction assessment use the operator&rsquo;s own CDM.</div>
 
   <a href="/">← back to the platform</a>
 </div>
