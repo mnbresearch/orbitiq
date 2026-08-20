@@ -19,6 +19,9 @@ import * as netops from "./src/netops.js";
 import * as fleetintel from "./src/fleetintel.js";
 import * as auth from "./src/auth.js";
 import * as mailer from "./src/mailer.js";
+import * as fleet from "./src/fleet.js";
+import * as watch from "./src/watch.js";
+import * as pcmod from "./src/pc.js";
 import { getSpaceWeather, environmentForLedger } from "./src/spaceweather.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -680,6 +683,129 @@ api.post("/admin/users/:id/reset-password", requireAdmin, (req, res) => {
      : res.status(404).json({ error: "User not found" });
 });
 
+// ═══════════════ v14: fleet registry, watch and manoeuvre ═══════════════
+// A workspace's fleet is a list of NORAD IDs carrying the physical
+// properties the probability and manoeuvre maths need. Every route below
+// is scoped to the calling workspace — there is no cross-tenant read.
+
+api.get("/fleet/assets", requireWs, (req, res) => {
+  res.json({ assets: fleet.listAssets(req.workspace.id), fleetSize: fleet.fleetSize(req.workspace.id) });
+});
+
+api.post("/fleet/assets", requireWs, requirePlan("tracker"), (req, res) => {
+  const limit = (store.PLANS[req.workspace.plan]?.rank ?? 0) >= 2 ? 500 : 25;
+  const existing = fleet.getAsset(req.workspace.id, req.body?.noradId);
+  if (fleet.fleetSize(req.workspace.id) >= limit && !existing) {
+    return res.status(402).json({ error: `Fleet limit of ${limit} reached on the ${req.workspace.plan} plan`, upgrade: true });
+  }
+  const r = fleet.addAsset(req.workspace.id, req.body || {});
+  r.error ? res.status(400).json(r) : res.status(201).json(r);
+});
+
+api.delete("/fleet/assets/:noradId", requireWs, requirePlan("tracker"), (req, res) => {
+  const r = fleet.removeAsset(req.workspace.id, req.params.noradId);
+  r.error ? res.status(404).json(r) : res.json(r);
+});
+
+api.get("/fleet/policy", requireWs, (req, res) => {
+  const p = fleet.getPolicy(req.workspace.id);
+  res.json({
+    policy: { ...p, webhookSecret: p.webhookSecret ? p.webhookSecret.slice(0, 12) + "…" : null },
+    defaults: fleet.DEFAULT_POLICY
+  });
+});
+
+api.put("/fleet/policy", requireWs, requirePlan("tracker"), (req, res) => {
+  const r = fleet.setPolicy(req.workspace.id, req.body || {});
+  if (r.error) return res.status(400).json(r);
+  // The signing secret is returned in full only on the write that creates
+  // or rotates it, so it can be copied once and never re-read.
+  res.json({ ok: true, policy: r.policy });
+});
+
+api.get("/fleet/webhook-log", requireWs, requirePlan("tracker"), (req, res) => {
+  res.json({ deliveries: fleet.webhookLog(req.workspace.id) });
+});
+
+// Assessed encounters for the caller's registered fleet.
+api.get("/fleet/encounters", requireWs, requirePlan("tracker"), async (req, res) => {
+  try {
+    const sats = await getSatellites();
+    const out = watch.screenFleet(req.workspace.id, sats, screenConjunctions, {
+      hours: Math.min(parseInt(req.query.hours) || 48, 96),
+      thresholdKm: Math.min(parseFloat(req.query.thresholdKm) || 25, 100)
+    });
+    // State vectors are stripped from the list view — large, and only
+    // needed when planning a specific manoeuvre.
+    const encounters = (out.assessed || []).map(({ state, ...rest }) => rest);
+    res.json({
+      fleetSize: out.fleetSize, screened: out.screened, catalogSize: out.catalogSize,
+      note: out.note, encounters, generatedAt: new Date().toISOString()
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Manoeuvre options for one encounter, identified by its two objects.
+api.post("/fleet/manoeuvre", requireWs, requirePlan("operator"), async (req, res) => {
+  try {
+    const { primaryId, secondaryId, targetMissKm } = req.body || {};
+    if (!primaryId || !secondaryId) return res.status(400).json({ error: "primaryId and secondaryId required" });
+    const asset = fleet.getAsset(req.workspace.id, primaryId);
+    if (!asset) return res.status(404).json({ error: "primaryId is not in your fleet" });
+
+    const sats = await getSatellites();
+    const out = watch.screenFleet(req.workspace.id, sats, screenConjunctions, { hours: 96, thresholdKm: 50 });
+    const enc = (out.assessed || []).find(a =>
+      String(a.primary.id) === String(primaryId) && String(a.secondary.id) === String(secondaryId));
+    if (!enc || !enc.state) return res.status(404).json({ error: "No current encounter between those objects" });
+
+    const leads = [24, 12, 6, 3].filter(h => h < enc.leadHours);
+    const plan = pcmod.planManoeuvre(enc.state, {
+      targetMissKm: Math.min(Math.max(Number(targetMissKm) || 5, 0.1), 100),
+      massKg: asset.massKg, ispS: asset.ispS, hbrM: enc.hbrM,
+      ageDaysA: enc.primary.ageDays, ageDaysB: enc.secondary.ageDays,
+      kindA: enc.primary.kind, kindB: enc.secondary.kind,
+      leadsHours: leads.length ? leads : [Math.max(0.5, enc.leadHours * 0.5)]
+    });
+    res.json({
+      encounter: { tca: enc.tca, missKm: enc.missKm, pc: enc.pc, pcBand: enc.pcBand,
+                   leadHours: enc.leadHours, ric: enc.ric },
+      spacecraft: asset, plan
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Run the watch on demand rather than waiting for the next sweep.
+api.post("/fleet/watch/run", requireWs, requirePlan("tracker"), async (req, res) => {
+  try {
+    const sats = await getSatellites();
+    const r = await watch.runWatch(req.workspace.id, req.workspace, sats, screenConjunctions, {
+      onEvent: p => { try { broadcast({ type: "conjunction.alert", data: p }); } catch { /* ws optional */ } }
+    });
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Assess an arbitrary pair — for API users checking a CDM by hand.
+api.get("/assess", requireWs, requirePlan("operator"), async (req, res) => {
+  try {
+    const { a, b } = req.query;
+    if (!a || !b) return res.status(400).json({ error: "a and b (NORAD IDs) required" });
+    const sats = await getSatellites();
+    const byId = new Map(sats.map(s => [String(s.id), s]));
+    if (!byId.has(String(a)) || !byId.has(String(b))) return res.status(404).json({ error: "Unknown object" });
+    const d = await runScreening(null, 24, 50);
+    const ev = (d.events || []).find(e =>
+      (String(e.a.id) === String(a) && String(e.b.id) === String(b)) ||
+      (String(e.a.id) === String(b) && String(e.b.id) === String(a)));
+    if (!ev) return res.json({ found: false, note: "No close approach between these objects in the next 24 hours." });
+    const assessed = watch.assessEvent(ev, byId, Number(req.query.hbrM) || 20);
+    if (!assessed) return res.json({ found: false, note: "Could not propagate both objects to the encounter." });
+    const { state, ...safe } = assessed;
+    res.json({ found: true, encounter: safe });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---------- v8: public status ----------
 api.get("/status", async (req, res) => {
   let catalog = 0;
@@ -692,6 +818,7 @@ api.get("/status", async (req, res) => {
     archive: ledger.stats(),
     backup: backup.status(),
     mail: mailer.status(),
+    fleets: fleet.stats(),
     liveClients: wss.clients.size,
     time: new Date().toISOString()
   });
@@ -884,6 +1011,19 @@ async function intelligenceSweep() {
       if (!r.error) ledger.append("risk", [{ org: o.id, index: r.index, grade: r.grade, components: r.components, fleetSize: r.fleetSize }]);
       await new Promise(res => setTimeout(res, 1500)); // breathe between screens
     }
+    // 3b. fleet watch — screen every registered fleet, alert what clears policy
+    for (const wsId of fleet.workspacesWithFleets()) {
+      try {
+        const ws = store.getWorkspace(wsId);
+        if (!ws) continue;
+        const r = await watch.runWatch(wsId, ws, sats, screenConjunctions, {
+          onEvent: p => { try { broadcast({ type: "conjunction.alert", data: p }); } catch {} }
+        });
+        if (r.notified) console.log(`watch: ${wsId} — ${r.notified} alert(s) from ${r.assessed} encounter(s)`);
+      } catch (e) { console.error("watch failed for", wsId, e.message); }
+      await new Promise(res => setTimeout(res, 800));
+    }
+
     // 4. congestion snapshot
     ledger.append("congestion", [{ org: null, mostCongested: cong.mostCongested, totalLeo: cong.shells.reduce((s, x) => s + x.count, 0) }]);
     // 5. space environment — enables risk ↔ space-weather correlation later
