@@ -143,6 +143,8 @@ const CONJ_TTL = 15 * 60 * 1000;
 // handful of objects and every screen comes back clean. That is the worst
 // possible failure — the product reports "no conjunctions" and looks healthy.
 // Validate, refuse nonsense, say so loudly, and publish the value in /status.
+// Bound for the unscoped all-on-all screen; see the note in runScreening.
+const ALL_ON_ALL_CAP = parseInt(process.env.ORBITIQ_ALL_ON_ALL_CAP || "2500", 10) || 2500;
 const SWEEP_CAP = (() => {
   const raw = process.env.ORBITIQ_SWEEP_CAP;
   if (raw === undefined || raw === "") return 6000;
@@ -225,19 +227,35 @@ async function runScreening(org, hours, thresholdKm, opts = {}) {
   const pending = inFlight.get(key);
   if (pending) return { ...(await pending), cached: true };
 
-  // Under load, a stale answer beats making the caller wait behind someone
-  // else's screen — and beats blocking the health check.
-  if (screensRunning > 0 && hit) {
+  // A stale answer always beats making the caller wait.
+  if (hit && (screensRunning > 0 || opts.neverQueue)) {
     return { ...hit.result, cached: true, stale: true,
-      note: "Served from the last completed screen while another is in progress." };
+      note: "Served from the last completed screen; a fresh one runs in the background." };
   }
-  if (screensRunning > 0 && opts.neverQueue) {
+  // Unauthenticated callers may READ the cache but must never START a screen.
+  // A cold all-on-all screen is seconds of blocked event loop and hundreds of
+  // MB on a 512 MB instance: enough for the platform health check to fail and
+  // the instance to be recycled mid-request. The background sweep warms the
+  // cache instead, so the public endpoint is always cheap.
+  if (opts.neverQueue) {
     return { events: [], screened: 0, catalogSize: 0, warming: true,
-      note: "First screen for these parameters is still running. Retry shortly." };
+      windowHours: h, thresholdKm: t,
+      note: "No screen has completed for these parameters yet. The background sweep "
+          + "refreshes them periodically; retry shortly, or use an API key to request one." };
+  }
+  if (screensRunning > 0 && !hit) {
+    return { events: [], screened: 0, catalogSize: 0, warming: true,
+      note: "Another screen is in progress. Retry shortly." };
   }
 
   const job = (async () => {
-    const sats = capForScreening(await getSatellites(), org);
+    let sats = capForScreening(await getSatellites(), org);
+    // With no primary operator every object is a primary, so the radial sieve
+    // cannot reduce anything and cost grows with the square of the population.
+    // The public teaser is bounded to the lowest-perigee slice, where the
+    // congestion — and the risk — actually is. Operator- and fleet-scoped
+    // screens are unaffected and still see the full catalogue.
+    if (!org && sats.length > ALL_ON_ALL_CAP) sats = sats.slice(0, ALL_ON_ALL_CAP);
     // Yield once so the response for any already-queued request can flush
     // before we take the loop for several seconds.
     await new Promise(r => setImmediate(r));
@@ -1245,6 +1263,19 @@ function everyNonOverlapping(fn, periodMs, label) {
   return timer;
 }
 
+async function warmScreeningCache() {
+  // Populates the cache the public endpoint reads from. Sequential and
+  // awaited, so it never overlaps itself or another screen.
+  for (const [hours, thresholdKm] of [[3, 10], [12, 25]]) {
+    try { await runScreening(null, hours, thresholdKm); }
+    catch (e) { console.error("warm screen failed:", e.message); }
+  }
+}
+// Deliberately NOT run at boot. A cold screen during startup makes the health
+// check fail before the instance is marked live, and it gets recycled — a boot
+// loop that looks like a crash. Let it come up and serve traffic first.
+setTimeout(() => { warmScreeningCache(); }, 3 * 60 * 1000).unref?.();
+everyNonOverlapping(warmScreeningCache, 20 * 60 * 1000, "screening cache warm");
 everyNonOverlapping(scanAllWorkspaces, 30 * 60 * 1000, "workspace scan");
 everyNonOverlapping(async () => { const n = trend.prune(); if (n) console.log(`trend: pruned ${n} past encounters`); }, 6 * 60 * 60 * 1000, "trend prune");
 everyNonOverlapping(snapshotPopulation, 6 * 60 * 60 * 1000, "population snapshot");
