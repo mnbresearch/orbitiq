@@ -138,7 +138,25 @@ const CONJ_TTL = 15 * 60 * 1000;
 // loop for minutes on a small instance. Cap the screening population,
 // prioritizing the lowest-perigee objects — the congested regime where the
 // collision risk actually lives. Override with ORBITIQ_SWEEP_CAP.
-const SWEEP_CAP = parseInt(process.env.ORBITIQ_SWEEP_CAP || "6000", 10);
+// parseInt is forgiving in a way that is dangerous here: parseInt("3k") is 3,
+// so a typo in this env var silently reduces the screening population to a
+// handful of objects and every screen comes back clean. That is the worst
+// possible failure — the product reports "no conjunctions" and looks healthy.
+// Validate, refuse nonsense, say so loudly, and publish the value in /status.
+const SWEEP_CAP = (() => {
+  const raw = process.env.ORBITIQ_SWEEP_CAP;
+  if (raw === undefined || raw === "") return 6000;
+  const n = Number(raw);                       // Number("3k") is NaN, unlike parseInt
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 100) {
+    console.error(
+      `\n  ORBITIQ_SWEEP_CAP is set to ${JSON.stringify(raw)}, which is not a valid\n` +
+      "  object count (must be a whole number >= 100). Ignoring it and using 6000.\n" +
+      "  A too-small cap makes every conjunction screen come back empty.\n");
+    return 6000;
+  }
+  if (n > 20000) { console.warn(`ORBITIQ_SWEEP_CAP=${n} is large; screening may be slow.`); }
+  return n;
+})();
 const MU_E = 398600.4418, RE_KM = 6371;
 function perigeeOf(s) {
   const nRad = (s.meanMotion * 2 * Math.PI) / 86400;
@@ -957,6 +975,9 @@ api.get("/status", async (req, res) => {
     mail: mailer.status(),
     fleets: fleet.stats(),
     trends: trend.stats(),
+    // Surfaced so a misconfigured cap is visible rather than silently
+    // turning every screen into a clean sheet.
+    screening: { sweepCap: SWEEP_CAP, sweepCapEnv: process.env.ORBITIQ_SWEEP_CAP ?? null },
     liveClients: wss.clients.size,
     time: new Date().toISOString()
   });
