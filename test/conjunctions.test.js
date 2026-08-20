@@ -154,6 +154,30 @@ test("screening", async () => {
     assert.equal(r.events.length, 1, `lost the event at threshold ${tight} km`);
   });
 
+  // Docked stacks (ISS + visiting vehicles, the CSS modules) are catalogued as
+  // separate objects at zero separation and zero relative velocity. Reporting
+  // them as CRITICAL conjunctions is both wrong and the most visible thing on
+  // the page, because they sort to the top.
+  check("excludes physically attached objects", () => {
+    const gp = gpFor({ id: 90010, name: "STATION CORE", incl: 41.5, raan: 30, meanAnom: 12 });
+    const docked = { ...gp, NORAD_CAT_ID: 90011, OBJECT_NAME: "STATION MODULE" };
+    const r = screenConjunctions([
+      { id: 90010, name: "STATION CORE", org: "testco", gp },
+      { id: 90011, name: "STATION MODULE", org: "other", gp: docked }
+    ], "testco", 1, 10, { start: START });
+    assert.equal(r.events.length, 0, "a docked pair must not be reported as a conjunction");
+    assert.equal(r.attachedPairsExcluded, 1, "and it must be counted, not silently dropped");
+  });
+
+  check("a genuine close approach is still reported", () => {
+    // Same fixture as above but a real crossing: low miss, high relative
+    // velocity. The attached filter keys on velocity, so this must survive.
+    const r = screenConjunctions(sats, "testco", WINDOW_SEC / 3600, threshold, { start: START });
+    assert.equal(r.events.length, 1);
+    assert.ok(r.events[0].relVelKmS > 1, `relVel ${r.events[0].relVelKmS} should be large`);
+    assert.equal(r.attachedPairsExcluded, 0);
+  });
+
   check("does not invent events between well-separated objects", () => {
     const far = [
       sats[0],
