@@ -137,9 +137,46 @@ export function orgList(sats) {
 
 // ---------- satellites ----------
 let satCache = { at: 0, sats: null };
+let satRebuild = null;   // in-flight rebuild, shared by concurrent callers
+
+// The in-memory catalogue used to expire after 10 minutes while the underlying
+// data only changes every 6 hours (SAT_TTL_MS). So every 10 minutes the next
+// request rebuilt ~16,500 objects from several megabytes of JSON — three
+// synchronous readFileSync + JSON.parse calls plus the mapping below — on the
+// request path. That is seconds of blocked event loop, and the platform health
+// check times out after five, so the instance was being marked unhealthy and
+// recycled every ten minutes under traffic. The rebuild is now as rare as the
+// data allows, shared between concurrent callers, and never blocks a request
+// that could be served from the previous copy.
+const SAT_MEM_TTL_MS = SAT_TTL_MS;          // rebuild only when the data can differ
 
 export async function getSatellites() {
-  if (satCache.sats && Date.now() - satCache.at < 10 * 60 * 1000) return satCache.sats;
+  const age = Date.now() - satCache.at;
+  if (satCache.sats && age < SAT_MEM_TTL_MS) return satCache.sats;
+
+  // Stale copy in hand: refresh in the background and answer immediately.
+  // A slightly old catalogue is enormously better than a five-second stall.
+  if (satCache.sats) {
+    if (!satRebuild) {
+      satRebuild = buildSatellites()
+        .then(s => { if (s.length) satCache = { at: Date.now(), sats: s }; return s; })
+        .catch(e => { console.error("catalogue refresh failed:", e.message); return satCache.sats; })
+        .finally(() => { satRebuild = null; });
+    }
+    return satCache.sats;
+  }
+
+  // Cold start: there is nothing to serve, so callers must wait — but they all
+  // wait on the SAME rebuild rather than each running their own.
+  if (!satRebuild) {
+    satRebuild = buildSatellites()
+      .then(s => { if (s.length) satCache = { at: Date.now(), sats: s }; return s; })
+      .finally(() => { satRebuild = null; });
+  }
+  return satRebuild;
+}
+
+async function buildSatellites() {
 
   const seen = new Set();
   const sats = [];
@@ -183,7 +220,6 @@ export async function getSatellites() {
       });
     }
   }
-  if (sats.length) satCache = { at: Date.now(), sats };
   return sats;
 }
 
