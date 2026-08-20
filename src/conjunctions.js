@@ -35,6 +35,31 @@
 import * as satellite from "satellite.js";
 import { EARTH_R_KM, V_REL_MAX_KMS } from "./constants.js";
 
+// ── Attached and co-located objects ─────────────────────────
+// A real catalogue contains many objects that are physically joined: the ISS
+// and its visiting Soyuz/Progress/Dragon vehicles, the Chinese Space Station's
+// Tianhe/Wentian/Mengtian modules with their Tianzhou and Shenzhou craft, and
+// spacecraft still mated to a spent upper stage. Each is tracked under its own
+// NORAD id, and each pair reports a separation of zero at a relative velocity
+// of zero — because they are bolted together.
+//
+// Left alone, these dominate the results: they are the "closest approaches" in
+// the entire catalogue, they are flagged CRITICAL, and they are the first
+// thing a visitor sees. They are also completely meaningless as collision
+// risk. Two objects cannot collide when they are already attached.
+//
+// The discriminator is relative velocity, not distance. A genuine slow
+// conjunction (co-planar constellation drift, say) has a low closing speed but
+// a real separation. An attached pair has BOTH a near-zero separation and a
+// near-zero closing speed, sustained across the whole encounter.
+const ATTACHED_MAX_SEP_KM = 0.5;    // 500 m — larger than any docked stack
+const ATTACHED_MAX_REL_V  = 0.01;   // 10 m/s — below any real closing speed
+
+/** True if this pair is physically attached or co-located, not conjuncting. */
+function looksAttached(missKm, relVelKmS) {
+  return missKm < ATTACHED_MAX_SEP_KM && relVelKmS < ATTACHED_MAX_REL_V;
+}
+
 /** SGP4's own Earth radius, used to convert satrec.a (in Earth radii) to km. */
 const SGP4_R_KM = 6378.135;
 
@@ -227,6 +252,7 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
 
   // ── Refinement ──────────────────────────────────────────────
   const events = [];
+  let attached = 0;
   for (const c of candidates.values()) {
     const { tSec, dKm } = refineTca(c.a.rec, c.b.rec, start, c.tSec, coarseStep);
     if (!(dKm <= thresholdKm)) continue;
@@ -237,6 +263,10 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
     const relV = Math.hypot(
       A.velocity.x - B.velocity.x, A.velocity.y - B.velocity.y, A.velocity.z - B.velocity.z);
     const altKm = Math.hypot(A.position.x, A.position.y, A.position.z) - EARTH_R_KM;
+
+    // Docked modules, mated stages and duplicate catalogue entries are not
+    // conjunctions. Counted and reported, never presented as risk.
+    if (looksAttached(dKm, relV)) { attached++; continue; }
 
     events.push({
       tca: t.toISOString(),
@@ -257,6 +287,9 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
     sievedTo: screenSet.length,
     windowHours: hours,
     thresholdKm,
+    // Pairs discarded as physically attached (docked stacks, mated stages).
+    // Surfaced rather than silently dropped, so the number is auditable.
+    attachedPairsExcluded: attached,
     // Stated honestly so callers can tell how much to trust a clean result.
     method: {
       coarseStepSec: coarseStep,
