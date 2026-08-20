@@ -77,9 +77,10 @@ async function main() {
     { org: null, hours: 12, km: 25 },
     { org: null, hours: 24, km: 25 }
   ];
-  // Plus the largest operators, which are what people click on first.
-  for (const o of orgList(sats).filter(o => o.id !== "other" && o.count >= 25).slice(0, 6)) {
-    jobs.push({ org: o.id, hours: 3, km: 10 });
+  // Plus the largest operators, which are what people click on first. Kept
+  // deliberately short: each screen is minutes of CPU, and a job that only
+  // just fits inside its timeout is a job that will eventually fail.
+  for (const o of orgList(sats).filter(o => o.id !== "other" && o.count >= 25).slice(0, 4)) {
     jobs.push({ org: o.id, hours: 12, km: 25 });
   }
 
