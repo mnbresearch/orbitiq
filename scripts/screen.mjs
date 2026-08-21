@@ -72,16 +72,29 @@ async function main() {
   // The combinations the app actually asks for. `hours` and `thresholdKm` are
   // snapped to this same grid server-side, so every public request maps onto
   // one of these files.
+  //
+  // This list is not cosmetic and it is not "whatever seems reasonable" — it
+  // must cover every pair any server call site can ask for. A pair that is
+  // missing here does not degrade gracefully: the server's lookup misses and,
+  // before the guard in runScreening() existed, it fell through to computing
+  // the screen in-process and got the instance killed by the health check.
+  // `(org, 3, 10)` was missing exactly this way and restarted the service
+  // roughly ten times an hour. If a new call site asks for a new pair, add it
+  // here in the same commit.
   const jobs = [
-    { org: null, hours: 3, km: 10 },
+    { org: null, hours: 3,  km: 10 },   // public teaser + intelligence sweep
     { org: null, hours: 12, km: 25 },
-    { org: null, hours: 24, km: 25 }
+    { org: null, hours: 24, km: 25 },
+    { org: null, hours: 24, km: 50 }    // /api/assess pair lookup
   ];
   // Plus the largest operators, which are what people click on first. Kept
   // deliberately short: each screen is minutes of CPU, and a job that only
   // just fits inside its timeout is a job that will eventually fail.
+  // Operator screens are far cheaper than the unscoped one because the
+  // apogee/perigee sieve applies, so both pairs fit comfortably.
   for (const o of orgList(sats).filter(o => o.id !== "other" && o.count >= 25).slice(0, 4)) {
-    jobs.push({ org: o.id, hours: 12, km: 25 });
+    jobs.push({ org: o.id, hours: 12, km: 25 }); // operator console
+    jobs.push({ org: o.id, hours: 3,  km: 10 }); // fleet risk + sweep
   }
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
