@@ -6,7 +6,25 @@
 # minute. This pings the service so it stays warm during the hours people
 # actually visit.
 #
-# ── The budget, which is the whole point ────────────────────
+# ── Why each run pings in a loop instead of once ─────────────
+# The obvious design — cron every 10 minutes, one ping per run — does not
+# work, and the failure is silent. GitHub's scheduled workflows are best
+# effort: the docs say a run "may be delayed during periods of high loads",
+# and in practice ticks are dropped wholesale. Measured gaps between
+# consecutive runs of the previous "*/10" version of this file:
+#
+#     25, 55, 41, 24, 49, 37 minutes
+#
+# Every one of those exceeds the 15-minute spin-down. The workflow was green
+# on every run and the service was asleep for most of the window, because a
+# green run only proves the ping happened, not that it happened in time.
+#
+# So the cron cadence is treated as a hint, not a guarantee. Each run keeps
+# pinging on its own five-minute clock for up to an hour, which covers the
+# gap even when the next tick is dropped entirely. The five-minute interval
+# leaves three chances to land inside any 15-minute spin-down window.
+#
+# ── The budget, which is the other half of the point ─────────
 # Render grants 750 free instance hours per WORKSPACE per calendar month.
 # Spun-down time costs nothing; running time is what counts. Exceed 750 and
 # every free service in the workspace is SUSPENDED until the month rolls over.
@@ -30,8 +48,11 @@
 # US morning. Outside it the service sleeps; a visitor arriving then simply
 # waits the ~50 s wake-up, exactly as today.
 #
-# To widen or narrow it, change the hour range in the cron below and re-read
-# the arithmetic in the "Report the budget" step, which recomputes it for you.
+# Note that the loop makes the 527 h estimate accurate rather than optimistic.
+# Under the old one-ping-per-run version actual usage was well BELOW 527 h,
+# but only because the service kept falling asleep — the bug and the underrun
+# were the same thing. Widening the window is therefore not free: re-read the
+# arithmetic in the "Report the budget" step, which recomputes it every run.
 #
 # Cost on GitHub's side: nothing. This repository is public, and public repos
 # get unlimited Actions minutes on standard runners — the 2,000-minute monthly
@@ -42,13 +63,15 @@ name: Keep-alive
 
 on:
   schedule:
-    # Every 10 minutes, but only between 03:00 and 19:59 UTC.
-    # Spin-down is 15 minutes, so a 10-minute cadence leaves headroom for
-    # GitHub's scheduler, which routinely runs cron jobs several minutes late
-    # under load and occasionally skips a tick entirely.
-    - cron: "*/10 3-19 * * *"
+    # Hourly. The loop below covers the whole hour, so a tighter cron would
+    # only queue runs that immediately cancel each other (see concurrency).
+    # Requesting less also makes it likelier GitHub actually honours the tick.
+    - cron: "5 3-19 * * *"
   workflow_dispatch: {}
 
+# If a run is somehow still going when the next fires, the newcomer wins and
+# takes over the pinging. A cancelled keep-alive run is expected and harmless,
+# not a failure to investigate.
 concurrency:
   group: orbitiq-keepalive
   cancel-in-progress: true
@@ -59,48 +82,61 @@ permissions:
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 70
     steps:
-      - name: Ping the service
+      - name: Keep the service warm for the hour
         env:
           URL: https://orbit.mnbresearch.com/api/health
+          INTERVAL_SEC: "300"   # 5 min: three shots inside any 15-min spin-down
+          DURATION_SEC: "3300"  # 55 min, so the next hourly tick takes over
         run: |
           # /api/health is deliberate: it is the cheapest endpoint on the
           # service. It does no screening, touches no catalogue, and allocates
           # nothing — so keeping the instance warm costs the instance nothing.
           ping_once () {
+            # Truncate first, or a later failure prints the body of an earlier
+            # success and makes an outage look like a malformed response.
+            : > /tmp/body
             code=$(curl -s -o /tmp/body -w "%{http_code}" --max-time 90 \
-                     -A "OrbitIQ-keepalive/1 (github.com/${{ github.repository }})" \
-                     "$URL" || echo "000")
+                     -A "OrbitIQ-keepalive/2 (github.com/${{ github.repository }})" \
+                     "$URL") || code="000"
             echo "$(date -u +%H:%M:%S) -> HTTP $code"
             [ "$code" = "200" ]
           }
 
-          # A cold instance takes ~50 s to wake, and the first request is the
-          # one that pays for it. Retry so a wake-up is not counted as failure.
-          ok=0
-          for attempt in 1 2 3; do
-            if ping_once; then ok=1; break; fi
-            echo "  cold or unhealthy, waiting before retry $attempt"
-            sleep 30
+          deadline=$(( $(date +%s) + DURATION_SEC ))
+          attempts=0; ok=0
+
+          while :; do
+            attempts=$(( attempts + 1 ))
+            # A cold instance takes ~50 s to wake and the first request pays
+            # for it, so one immediate retry before counting a miss.
+            if ping_once || { sleep 20; ping_once; }; then
+              ok=$(( ok + 1 ))
+            else
+              echo "::warning::ping $attempts did not return 200"
+              head -c 200 /tmp/body || true
+            fi
+            [ "$(date +%s)" -lt "$deadline" ] || break
+            sleep "$INTERVAL_SEC"
           done
 
-          # A second ping five minutes later. GitHub's scheduler is not
-          # punctual; if the next run slips past the 15-minute spin-down this
-          # bridges the gap on its own.
-          sleep 300
-          ping_once || echo "::warning::follow-up ping did not return 200"
+          echo "kept warm with $ok/$attempts successful pings"
+          echo "KEEPALIVE_OK=$ok"            >> "$GITHUB_ENV"
+          echo "KEEPALIVE_ATTEMPTS=$attempts" >> "$GITHUB_ENV"
 
-          if [ "$ok" != "1" ]; then
-            echo "::warning::service did not return 200 after three attempts"
-            head -c 300 /tmp/body || true
+          # Only shout if the service was down for the whole hour. Individual
+          # misses during a Render incident are noise; a total miss is not.
+          if [ "$ok" = "0" ]; then
+            echo "::error::service never returned 200 in $attempts attempts over the hour"
+            exit 1
           fi
 
       - name: Report the budget
         if: always()
         run: |
           python3 - <<'EOF'
-          import calendar, datetime
+          import calendar, datetime, os
           # Recomputed every run so the numbers in the header can never drift
           # away from the schedule that is actually configured above.
           START_H, END_H = 3, 19          # inclusive cron hour range
@@ -112,6 +148,10 @@ jobs:
           projected = hours_per_day * days
           pct = projected / QUOTA * 100
 
+          ok = os.environ.get("KEEPALIVE_OK", "?")
+          attempts = os.environ.get("KEEPALIVE_ATTEMPTS", "?")
+
+          print(f"pings this run  : {ok}/{attempts} returned 200")
           print(f"window          : {START_H:02d}:00-{END_H:02d}:59 UTC ({hours_per_day} h/day)")
           print(f"days this month : {days}")
           print(f"projected usage : {projected} h of {QUOTA} h  ({pct:.0f}%)")
