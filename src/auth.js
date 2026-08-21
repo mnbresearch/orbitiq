@@ -11,7 +11,13 @@ import crypto from "crypto";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FILE = path.join(__dirname, "..", "data", "auth.json");
+// The data directory is overridable so the test suite can run against a
+// throwaway directory. Without this, importing this module in a test writes
+// real accounts into data/auth.json — which happened, and also made the
+// tests non-repeatable because the fixture email was already taken on the
+// second run.
+const DATA_DIR = process.env.ORBITIQ_DATA_DIR || path.join(__dirname, "..", "data");
+const FILE = path.join(DATA_DIR, "auth.json");
 
 let db = { users: [], requests: [], sessions: {} };
 try { db = { ...db, ...JSON.parse(fs.readFileSync(FILE, "utf8")) }; } catch { /* fresh */ }
@@ -20,7 +26,10 @@ let saveTimer = null;
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    try { fs.writeFileSync(FILE, JSON.stringify(db)); } catch (e) { console.error("auth save failed:", e.message); }
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(FILE, JSON.stringify(db));
+    } catch (e) { console.error("auth save failed:", e.message); }
   }, 250);
 }
 
@@ -93,8 +102,47 @@ export function login(email, password) {
   for (const [t, s] of Object.entries(db.sessions)) if (s.exp < Date.now()) delete db.sessions[t];
   const token = crypto.randomBytes(32).toString("base64url");
   db.sessions[token] = { userId: u.id, exp: Date.now() + SESSION_TTL };
+  // Sign-in history. `firstSignIn` is computed BEFORE the counter moves, so the
+  // caller can tell a brand-new operator from a returning one; it is the whole
+  // basis for deciding whether to send the welcome mail, and it must be true
+  // exactly once per account for the lifetime of that account.
+  const firstSignIn = !u.signInCount;
+  u.signInCount = (u.signInCount || 0) + 1;
+  u.lastSignInAt = new Date().toISOString();
+  if (firstSignIn) u.firstSignInAt = u.lastSignInAt;
   save();
-  return { token, user: u };
+  return { token, user: u, firstSignIn };
+}
+
+/**
+ * Change the address a user signs in with.
+ *
+ * Email is the login identifier here, so this is an identity change, not a
+ * profile edit: it must stay unique, and it must not silently hand the account
+ * to a different mailbox. Returns the previous address so the caller can tell
+ * BOTH sides that it happened.
+ */
+export function changeEmail(userId, nextEmail) {
+  const u = getUser(userId);
+  if (!u) return { error: "User not found" };
+  const email = String(nextEmail || "").toLowerCase().trim();
+  // Deliberately conservative: one @, a dot in the domain, no whitespace.
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: "That is not a valid email address" };
+  if (email.length > 190) return { error: "Email address is too long" };
+  if (email === u.email) return { error: "That is already this user's address" };
+  const clash = db.users.find(x => x.email === email && x.id !== u.id);
+  if (clash) return { error: "Another account already uses that address" };
+  const previous = u.email;
+  u.email = email;
+  u.emailChangedAt = new Date().toISOString();
+  // Signing in is what proves control of an address, so make them do it again:
+  // every existing session for this user is dropped.
+  let revoked = 0;
+  for (const [t, s] of Object.entries(db.sessions)) {
+    if (s.userId === u.id) { delete db.sessions[t]; revoked++; }
+  }
+  save();
+  return { ok: true, previous, email, revokedSessions: revoked };
 }
 export function sessionUser(token) {
   const s = db.sessions[token];

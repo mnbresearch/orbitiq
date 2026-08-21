@@ -117,3 +117,82 @@ ${name ? esc(String(name).split(" ")[0]) + "," : "Hello,"} thank you for your in
 We are not able to open a workspace for you at this time. Operational capacity is allocated in cohorts, so this may change — you are welcome to reply to this message and we will revisit it.</p>`;
   return send({ to: email, subject: "About your OrbitIQ access request", html: shell("Request update", inner) });
 }
+
+// ---------- 5. sign-in → operator inbox ----------
+// Fires on every successful sign-in. `firstTime` separates the moment that
+// actually matters — a newly approved operator using their workspace for the
+// first time — from routine returning traffic, because both land in the same
+// inbox and only one of them is news.
+export async function notifySignIn({ email, name, org, plan, ip, userAgent, firstTime, at }) {
+  if (!email) return { ok: false };
+  const when = new Date(at || Date.now()).toUTCString();
+  const lead = firstTime
+    ? `<strong style="color:#3EE89B">${esc(name || email)}</strong> signed in to OrbitIQ for the first time.`
+    : `${esc(name || email)} signed in to OrbitIQ.`;
+  const inner = `<p style="margin:0 0 18px;font-size:14px;line-height:1.55;color:#c3cfe4">${lead}</p>
+<table style="width:100%;border-collapse:collapse;background:#060a15;border:1px solid rgba(90,130,200,.18);border-radius:10px;padding:6px 14px">
+${row("Name", name)}${row("Email", email)}${row("Organization", org)}${row("Plan", plan)}
+${row("First sign-in", firstTime ? "yes" : "no")}${row("IP address", ip)}${row("Device", userAgent)}
+${row("Signed in", when)}</table>
+<p style="margin:20px 0 0;font-size:13px;line-height:1.55;color:#c3cfe4">
+Manage this operator in the <a href="https://orbit.mnbresearch.com/admin.html" style="color:#38bdf8;text-decoration:none">admin portal</a> —
+you can change their plan, reset their password or update their email address there.</p>`;
+  return send({
+    to: TO,
+    subject: firstTime
+      ? `OrbitIQ — first sign-in: ${name || email}`
+      : `OrbitIQ sign-in — ${name || email}`,
+    html: shell(firstTime ? "New operator active" : "Sign-in", inner),
+    replyTo: email
+  });
+}
+
+// ---------- 6. welcome → the operator, first sign-in only ----------
+// Deliberately not sent on every sign-in. A "thanks for signing in" message
+// that arrives daily is indistinguishable from spam, and the fastest way to
+// get a sending domain filtered is to send mail nobody opens.
+export async function welcomeOnFirstSignIn({ email, name, plan, org }) {
+  if (!email) return { ok: false };
+  const first = name ? esc(String(name).split(" ")[0]) + "," : "Hello,";
+  const inner = `<p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c3cfe4">
+${first} welcome to OrbitIQ — and thank you for signing in.</p>
+<p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c3cfe4">
+Your workspace is live. From here you can screen ${org ? esc(org) + "'s" : "your"} spacecraft against the
+public catalogue of tracked objects, see probability of collision computed by Foster's encounter-plane
+method rather than a miss-distance rule of thumb, plan avoidance manoeuvres, and read back a permanent
+archive of every detection we have made for you.</p>
+<table style="width:100%;border-collapse:collapse;background:#060a15;border:1px solid rgba(90,130,200,.18);border-radius:10px;padding:6px 14px">
+${row("Console", "https://orbit.mnbresearch.com/app")}
+${row("API reference", "https://orbit.mnbresearch.com/docs.html")}
+${row("Service status", "https://orbit.mnbresearch.com/status.html")}
+${plan ? row("Your plan", plan) : ""}</table>
+<p style="margin:18px 0 0;font-size:14px;line-height:1.6;color:#c3cfe4">
+OrbitIQ is built by <a href="https://www.mnbresearch.com" style="color:#38bdf8;text-decoration:none">MNB Research</a>,
+and the product page lives at
+<a href="https://www.mnbresearch.com/orbitiq" style="color:#38bdf8;text-decoration:none">mnbresearch.com/orbitiq</a>.
+If you want a walkthrough, or something in the data looks wrong, reply to this message and it reaches our team directly.</p>
+<p style="margin:16px 0 0;font-size:13px;line-height:1.6;color:#7385a3">
+One note on honesty: conjunction screening is a decision aid, not a guarantee. We publish what we screened,
+when, and to what completeness, so you can judge the answer rather than take it on trust.</p>`;
+  return send({ to: email, subject: "Welcome to OrbitIQ", html: shell("Welcome aboard", inner) });
+}
+
+// ---------- 7. email address changed → both addresses ----------
+// Sent to the OLD address as well as the new one. An account silently
+// repointed to an attacker's mailbox is the classic takeover; telling the
+// previous owner is what makes that loud instead of quiet.
+export async function notifyEmailChanged({ oldEmail, newEmail, name, by }) {
+  const inner = (audience) => `<p style="margin:0 0 16px;font-size:14px;line-height:1.6;color:#c3cfe4">
+${name ? esc(String(name).split(" ")[0]) + "," : "Hello,"} the email address on your OrbitIQ account was changed${by ? " by " + esc(by) : ""}.</p>
+<table style="width:100%;border-collapse:collapse;background:#060a15;border:1px solid rgba(90,130,200,.18);border-radius:10px;padding:6px 14px">
+${row("Previous address", oldEmail)}${row("New address", newEmail)}${row("Changed", new Date().toUTCString())}</table>
+<p style="margin:18px 0 0;font-size:14px;line-height:1.6;color:#c3cfe4">
+${audience === "old"
+    ? "Sign in from now on with the new address. If you did not expect this change, reply immediately — we will lock the account while we look into it."
+    : "You can now sign in with this address. Your password and API key are unchanged."}</p>`;
+  const jobs = [];
+  if (oldEmail) jobs.push(send({ to: oldEmail, subject: "Your OrbitIQ sign-in address was changed", html: shell("Account updated", inner("old")) }));
+  if (newEmail) jobs.push(send({ to: newEmail, subject: "Your OrbitIQ sign-in address was changed", html: shell("Account updated", inner("new")) }));
+  const out = await Promise.all(jobs);
+  return { ok: out.every(r => r.ok) };
+}
