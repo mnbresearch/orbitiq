@@ -87,6 +87,7 @@ jobs:
       - name: Keep the service warm for the hour
         env:
           URL: https://orbit.mnbresearch.com/api/health
+          WARM_URL: https://orbit.mnbresearch.com/api/status
           INTERVAL_SEC: "300"   # 5 min: three shots inside any 15-min spin-down
           DURATION_SEC: "3300"  # 55 min, so the next hourly tick takes over
         run: |
@@ -104,8 +105,23 @@ jobs:
             [ "$code" = "200" ]
           }
 
+          # Keeping the process alive is not the same as keeping it useful.
+          # /api/health answers in ~300 ms even on a box that has just booted,
+          # because it touches nothing; /api/status on a cold instance took
+          # 34.6 s while it built the 16,513-object catalogue. Without this the
+          # keep-alive would hold a warm process in front of a cold cache and
+          # the first real visitor would still wait. One request per run is
+          # enough — once built, the catalogue is served from memory and
+          # refreshed in the background.
+          warm_catalogue () {
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
+                     -A "OrbitIQ-keepalive/2 (github.com/${{ github.repository }})" \
+                     "$WARM_URL") || code="000"
+            echo "$(date -u +%H:%M:%S) -> catalogue warm-up HTTP $code"
+          }
+
           deadline=$(( $(date +%s) + DURATION_SEC ))
-          attempts=0; ok=0
+          attempts=0; ok=0; warmed=0
 
           while :; do
             attempts=$(( attempts + 1 ))
@@ -113,6 +129,7 @@ jobs:
             # for it, so one immediate retry before counting a miss.
             if ping_once || { sleep 20; ping_once; }; then
               ok=$(( ok + 1 ))
+              if [ "$warmed" = "0" ]; then warm_catalogue; warmed=1; fi
             else
               echo "::warning::ping $attempts did not return 200"
               head -c 200 /tmp/body || true
