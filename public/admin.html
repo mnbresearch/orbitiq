@@ -143,7 +143,8 @@ async function refresh() {
         </div>
         ${u.role !== "admin" ? `
           ${u.workspace ? `<select onchange="setPlan('${u.workspace.id}', this.value)">${PLANS.map(p => `<option value="${p}" ${u.workspace.plan === p ? "selected" : ""}>${p}</option>`).join("")}</select>` : ""}
-          <button class="btn" onclick="resetPw('${u.id}', '${esc(u.email)}')">Reset password</button>` : `<span class="sub">env-managed</span>`}
+          <button class="btn" onclick="resetPw('${u.id}', '${esc(u.email)}')">Reset password</button>
+          <button class="btn" onclick="changeEmail('${u.id}', '${esc(u.email)}')">Change email</button>` : `<span class="sub">env-managed</span>`}
       </div>`).join("");
 
     $("workspaces").innerHTML = ov.workspaces.map(w => `
@@ -183,6 +184,28 @@ async function resetPw(id, email) {
     const d = await api("/api/admin/users/" + id + "/reset-password", { method: "POST", body: "{}" });
     try { await navigator.clipboard.writeText(d.tempPassword); } catch {}
     toast("New temp password for " + email + ": " + d.tempPassword + " (copied)", 20000);
+  } catch (e) { toast(e.message); }
+}
+async function changeEmail(id, current) {
+  // Email is how this person signs in, so spell out the consequences before
+  // doing it rather than after: they lose their sessions, and both the old and
+  // new mailbox get told.
+  const next = prompt(
+    "New sign-in address for " + current + "\n\n"
+    + "The user will be signed out everywhere and must sign in again with the new address.\n"
+    + "Both the old and the new address will be notified.",
+    current);
+  if (next === null) return;
+  const email = next.trim();
+  if (!email || email === current) return;
+  try {
+    const d = await api("/api/admin/users/" + id + "/email", {
+      method: "POST", body: JSON.stringify({ email })
+    });
+    toast(d.previous + " is now " + d.email
+      + " · " + d.revokedSessions + " session(s) revoked"
+      + (d.emailed ? " · both addresses notified" : " · mail not configured"), 14000);
+    refresh();
   } catch (e) { toast(e.message); }
 }
 async function delWs(id, name) {
