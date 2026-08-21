@@ -1,3 +1,14 @@
 node_modules/
 cache/
 nohup.out
+
+# Runtime state. data/auth.json holds scrypt password hashes and live session
+# tokens; store.json holds workspace API keys. None of it belongs in a public
+# repository, and the directory also contains committed *.sample.json fixtures,
+# so ignore the runtime files by name rather than ignoring data/ wholesale.
+data/auth.json
+data/store.json
+data/fleet.json
+data/trend.json
+data/ledger.jsonl
+out/

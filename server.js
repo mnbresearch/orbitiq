@@ -827,6 +827,28 @@ const requireSession = (req, res, next) => {
   req.user = u; next();
 };
 const loginBuckets = new Map();
+// Sign-in mail is per-sign-in, but "sign in" is not always a human act: a
+// stored credential in a script, a retried request, or someone bouncing on the
+// button produces a burst of perfectly valid logins. Collapse anything from the
+// same account inside this window into one notification, so the inbox tracks
+// people rather than requests. A normal daily sign-in is far outside it and
+// still notifies every time.
+const SIGNIN_NOTICE_COOLDOWN_MS = 10 * 60 * 1000;
+const signInNotices = new Map();   // userId -> last notified at
+function signInNoticeSuppressed(userId) {
+  const now = Date.now();
+  const last = signInNotices.get(userId);
+  if (last && now - last < SIGNIN_NOTICE_COOLDOWN_MS) return true;
+  signInNotices.set(userId, now);
+  // Bounded: this map must not become a slow memory leak on a 512 MB box.
+  if (signInNotices.size > 5000) {
+    for (const [k, t] of signInNotices) {
+      if (now - t > SIGNIN_NOTICE_COOLDOWN_MS) signInNotices.delete(k);
+    }
+  }
+  return false;
+}
+
 api.post("/auth/login", (req, res) => {
   const ip = req.ip || "?", min = Math.floor(Date.now() / 60000);
   const b = loginBuckets.get(ip);
@@ -836,6 +858,30 @@ api.post("/auth/login", (req, res) => {
   const result = auth.login(email, password);
   if (!result) return res.status(401).json({ error: "Invalid email or password" });
   const w = result.user.workspaceId ? store.getWorkspace(result.user.workspaceId) : null;
+
+  // ── Sign-in notifications ────────────────────────────────────
+  // Fired after the session exists and never awaited: mail is a side effect of
+  // signing in, not a precondition for it. If Resend is slow or down the user
+  // still gets their token immediately, and a rejected promise cannot take the
+  // request down with it.
+  //
+  // The owner hears about every sign-in. The USER only hears about their first
+  // one — a "thanks for signing in" note that arrives on every login is
+  // indistinguishable from spam and is the quickest way to get the sending
+  // domain filtered, which would cost us the credential mails that actually
+  // matter.
+  if (mailer.enabled() && !signInNoticeSuppressed(result.user.id)) {
+    const meta = {
+      email: result.user.email, name: result.user.name,
+      org: w ? w.org : null, plan: w ? (store.PLANS[w.plan]?.label || w.plan) : null,
+      ip: req.ip || null,
+      userAgent: String(req.headers["user-agent"] || "").slice(0, 160) || null,
+      firstTime: !!result.firstSignIn, at: Date.now()
+    };
+    mailer.notifySignIn(meta).catch(() => {});
+    if (result.firstSignIn) mailer.welcomeOnFirstSignIn(meta).catch(() => {});
+  }
+
   res.json({
     token: result.token,
     user: { email: result.user.email, name: result.user.name, role: result.user.role, mustChangePassword: !!result.user.mustChangePassword },
@@ -927,6 +973,30 @@ api.get("/admin/users", requireAdmin, (req, res) => {
     return { ...u, workspace: w ? { id: w.id, name: w.name, org: w.org, plan: w.plan } : null };
   });
   res.json({ users, authStats: auth.stats() });
+});
+api.post("/admin/users/:id/email", requireAdmin, async (req, res) => {
+  // Email is the sign-in identifier, so this is an identity change rather than
+  // a profile edit. auth.changeEmail enforces uniqueness and drops every live
+  // session for the account; here we make sure the change is never silent.
+  const target = auth.getUser(req.params.id);
+  if (!target) return res.status(404).json({ error: "User not found" });
+  const previous = target.email;
+  const r = auth.changeEmail(req.params.id, req.body?.email);
+  if (r.error) return res.status(400).json({ error: r.error });
+  const emailed = mailer.enabled();
+  if (emailed) {
+    // Both addresses, always. The old mailbox is the only party that can tell
+    // us this was not meant to happen.
+    mailer.notifyEmailChanged({
+      oldEmail: previous, newEmail: r.email,
+      name: target.name, by: req.user?.email || "an administrator"
+    }).catch(() => {});
+  }
+  res.json({
+    ok: true, previous, email: r.email, revokedSessions: r.revokedSessions, emailed,
+    note: "The user must sign in again with the new address. Both the old and new "
+        + (emailed ? "addresses have been notified." : "addresses would be notified if mail were configured.")
+  });
 });
 api.post("/admin/users/:id/reset-password", requireAdmin, (req, res) => {
   const pw = auth.resetPassword(req.params.id);
