@@ -145,6 +145,10 @@ const CONJ_TTL = 15 * 60 * 1000;
 // Validate, refuse nonsense, say so loudly, and publish the value in /status.
 // Bound for the unscoped all-on-all screen; see the note in runScreening.
 const ALL_ON_ALL_CAP = parseInt(process.env.ORBITIQ_ALL_ON_ALL_CAP || "2500", 10) || 2500;
+// Screening on the web instance is OFF by default — see the long note in
+// runScreening(). This exists so a bigger box (or a local dev run, or the test
+// suite) can still exercise the compute path; production must never set it.
+const ALLOW_LOCAL_SCREEN = process.env.ORBITIQ_ALLOW_LOCAL_SCREEN === "1";
 let SWEEP_CAP_VALID = true;
 const SWEEP_CAP = (() => {
   const raw = process.env.ORBITIQ_SWEEP_CAP;
@@ -295,6 +299,33 @@ async function runScreening(org, hours, thresholdKm, opts = {}) {
     return { events: [], screened: 0, catalogSize: 0, warming: true,
       note: "Another screen is in progress. Retry shortly." };
   }
+
+  // ── The web instance does not screen. Ever. ──────────────────
+  // Screening was moved to the GitHub Actions worker precisely because
+  // screenConjunctions() is seconds of SYNCHRONOUS SGP4 over the whole
+  // catalogue: on a shared-CPU 512 MB instance it blows straight through
+  // Render's 5-second health-check budget and the instance is recycled.
+  //
+  // Guarding the individual callers was not enough, and the failure was
+  // brutal: the background sweep asked for `(org, 3, 10)` while the worker
+  // only published `(org, 12, 25)`. One unpublished parameter pair meant the
+  // lookup missed, execution fell through to the local compute path below,
+  // and the instance died 5 minutes after every boot — which is exactly how
+  // long `setTimeout(intelligenceSweep, 5 * 60 * 1000)` waits. Boot, serve
+  // for five minutes, sweep, stall, get killed, boot again. Roughly ten
+  // restarts an hour, indefinitely.
+  //
+  // So the rule is enforced here, once, instead of at eight call sites: if
+  // there is no published screen and no cache entry, say so. A caller that
+  // gets `warming: true` degrades visibly; an instance that gets recycled
+  // takes the whole site down invisibly.
+  if (!ALLOW_LOCAL_SCREEN) {
+    return { events: [], screened: 0, catalogSize: 0, warming: true,
+      windowHours: h, thresholdKm: t,
+      note: "No published screen for these parameters yet. Screening runs in the "
+          + "offline worker; this instance never computes one on the request path." };
+  }
+
 
   const job = (async () => {
     let sats = capForScreening(await getSatellites(), org);
