@@ -13,10 +13,38 @@
 // ============================================================
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, "..", "data");
+
+// ---------- encryption for secret-bearing archives ----------
+// AES-256-GCM: the tag makes tampering detectable, not just unreadable.
+// The key is a 64-char hex string in ORBITIQ_BACKUP_KEY, held only in the
+// service environment and never written to the repository.
+const BACKUP_KEY = (() => {
+  const raw = process.env.ORBITIQ_BACKUP_KEY || "";
+  if (!/^[0-9a-fA-F]{64}$/.test(raw)) return null;
+  return Buffer.from(raw, "hex");
+})();
+export const canProtectSecrets = () => !!BACKUP_KEY;
+
+function seal(plaintext) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv("aes-256-gcm", BACKUP_KEY, iv);
+  const body = Buffer.concat([c.update(plaintext, "utf8"), c.final()]);
+  // v1|iv|tag|ciphertext, all base64 — self-describing so a future format
+  // change cannot be silently mistaken for corruption.
+  return ["v1", iv.toString("base64"), c.getAuthTag().toString("base64"), body.toString("base64")].join(".");
+}
+function unseal(text) {
+  const [v, iv, tag, body] = String(text).trim().split(".");
+  if (v !== "v1") throw new Error("unknown backup format " + v);
+  const d = crypto.createDecipheriv("aes-256-gcm", BACKUP_KEY, Buffer.from(iv, "base64"));
+  d.setAuthTag(Buffer.from(tag, "base64"));
+  return Buffer.concat([d.update(Buffer.from(body, "base64")), d.final()]).toString("utf8");
+}
 
 const TOKEN = process.env.ORBITIQ_GH_TOKEN || null;
 const REPO = process.env.ORBITIQ_BACKUP_REPO || "mnbresearch/orbitiq";
@@ -26,8 +54,18 @@ const MAX_LEDGER_LINES = 60000; // keep backups well under API blob limits
 
 const FILES = [
   { local: path.join(DATA_DIR, "ledger.jsonl"), remote: "backup/ledger.jsonl", capLines: MAX_LEDGER_LINES },
-  { local: path.join(DATA_DIR, "store.json"), remote: "backup/store.json" },
-  { local: path.join(DATA_DIR, "auth.json"), remote: "backup/auth.json" },
+  // ── SECRET-BEARING. Encrypted before publication. ──────────
+  // This branch lives in a PUBLIC repository. store.json carries workspace API
+  // keys; auth.json carries scrypt password hashes, the access-request queue,
+  // and live session bearer tokens. Publishing either in the clear hands anyone
+  // who can read the repo a working set of credentials, which is what happened
+  // before this guard existed.
+  //
+  // These are encrypted with ORBITIQ_BACKUP_KEY and FAIL CLOSED: with no key
+  // configured the file is skipped entirely rather than uploaded in the clear.
+  // Losing a backup is recoverable; publishing session tokens is not.
+  { local: path.join(DATA_DIR, "store.json"), remote: "backup/store.json.enc", secret: true },
+  { local: path.join(DATA_DIR, "auth.json"), remote: "backup/auth.json.enc", secret: true },
   // The seals are the point of the whole exercise: publishing the tip hash to
   // a branch whose commits GitHub timestamps is what turns "we did not edit
   // this" from an assertion into something a third party can check. They are
@@ -78,7 +116,22 @@ export async function restore() {
         headers: { Accept: "application/vnd.github.raw" }
       });
       if (!r.ok) continue;
-      const text = await r.text();
+      let text = await r.text();
+      if (f.secret) {
+        if (!BACKUP_KEY) {
+          console.error(`backup: cannot restore ${f.remote} — ORBITIQ_BACKUP_KEY is not set.`);
+          state.lastError = "restore: secret-bearing archive needs ORBITIQ_BACKUP_KEY";
+          continue;
+        }
+        // Decrypt, and let a failure be loud. Silently writing an undecryptable
+        // blob to disk would corrupt the live store with ciphertext.
+        try { text = unseal(text); }
+        catch (e) {
+          console.error(`backup: ${f.remote} failed to decrypt (${e.message}) — leaving local file untouched.`);
+          state.lastError = "restore: decrypt failed for " + f.remote;
+          continue;
+        }
+      }
       if (text && text.length > 2) {
         fs.mkdirSync(path.dirname(f.local), { recursive: true });
         fs.writeFileSync(f.local, text);
@@ -99,6 +152,15 @@ export async function backup() {
     for (const f of FILES) {
       let text;
       try { text = fs.readFileSync(f.local, "utf8"); } catch { continue; }
+      if (f.secret) {
+        if (!BACKUP_KEY) {
+          console.error(`backup: SKIPPING ${f.remote} — ORBITIQ_BACKUP_KEY is not set and this `
+            + `branch is public. Set a 64-char hex key to persist it safely.`);
+          state.lastError = "secret-bearing archives skipped: no ORBITIQ_BACKUP_KEY";
+          continue;
+        }
+        text = seal(text);
+      }
       if (f.capLines) {
         const lines = text.split("\n").filter(Boolean);
         if (lines.length > f.capLines) text = lines.slice(-f.capLines).join("\n") + "\n";
