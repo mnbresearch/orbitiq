@@ -681,6 +681,35 @@ api.get("/plans", (req, res) => res.json({
 
 // ---------- intelligence archive (the data moat) ----------
 api.get("/archive/stats", (req, res) => res.json(ledger.stats())); // public: shows the moat growing
+
+// Verification is deliberately PUBLIC and unauthenticated. An integrity claim
+// that only the vendor can check is not an integrity claim — the whole value
+// is that a counterparty who does not trust us can confirm it themselves.
+api.get("/archive/verify", (req, res) => {
+  const v = ledger.verify();
+  res.json({
+    ...v,
+    seals: ledger.seals().slice(-5),
+    anchor: ledger.anchor(),
+    published: "Seals are mirrored to the data-backup branch of github.com/mnbresearch/orbitiq. "
+             + "GitHub timestamps those commits, so a seal published before a given date is "
+             + "independent evidence of what the archive contained on that date.",
+    limits: "Tamper-evident, not tamper-proof. This proves the record has not been edited since "
+          + "a published seal. It is not a signature and does not attest who wrote the rows."
+  });
+});
+api.get("/archive/seals", (req, res) => res.json({ seals: ledger.seals(), anchor: ledger.anchor() }));
+
+// The paid artefact: a verifiable extract for one operator over one window.
+api.get("/archive/proof", requireWs, requirePlan("operator"), (req, res) => {
+  const org = req.query.org || req.workspace.org;
+  if (!org) return res.status(400).json({ error: "No organisation on this workspace; pass ?org=" });
+  res.json(ledger.proof({
+    org, since: req.query.since, until: req.query.until,
+    limit: Math.min(parseInt(req.query.limit, 10) || 2000, 5000)
+  }));
+});
+
 api.get("/archive/events", requirePlan("operator"), (req, res) => {
   res.json(ledger.query({
     type: req.query.type, org: req.query.org,
@@ -1445,6 +1474,14 @@ everyNonOverlapping(warmScreeningCache, 20 * 60 * 1000, "screening cache warm");
 everyNonOverlapping(scanAllWorkspaces, 30 * 60 * 1000, "workspace scan");
 everyNonOverlapping(async () => { const n = trend.prune(); if (n) console.log(`trend: pruned ${n} past encounters`); }, 6 * 60 * 60 * 1000, "trend prune");
 everyNonOverlapping(snapshotPopulation, 6 * 60 * 60 * 1000, "population snapshot");
+// Seal hourly. Cheap (one hash walk), and the tighter the seal cadence the
+// narrower the window in which history could be rewritten unnoticed.
+everyNonOverlapping(async () => {
+  const r = ledger.seal();
+  if (r.ok && !r.unchanged) console.log(`ledger: sealed at seq ${r.seal.seq} (${r.seal.hash})`);
+  if (!r.ok && r.error !== "nothing to seal yet") console.error("ledger seal refused:", r.error);
+}, 60 * 60 * 1000, "ledger seal");
+
 everyNonOverlapping(intelligenceSweep, 6 * 60 * 60 * 1000, "intelligence sweep");
 // stagger heavy boot work so the instance passes health checks first
 setTimeout(snapshotPopulation, 90 * 1000);
