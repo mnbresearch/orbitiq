@@ -275,7 +275,7 @@
     <div>
       <div class="eyebrow"><b></b> Access by approval only</div>
       <h1 id="h1"></h1>
-      <p class="lede">OrbitIQ is a private space traffic intelligence platform for satellite operators. It screens the live catalogue continuously, ranks what actually threatens your spacecraft, and keeps a permanent record of everything it saw — so your decisions rest on evidence, not on a snapshot.</p>
+      <p class="lede">OrbitIQ screens the live catalogue against your fleet, ranks what actually threatens your spacecraft by probability rather than miss distance, and writes every detection into a tamper-evident archive. Months later you can hand an insurer, a regulator or a counterparty the exact record of what you were told and when — and they can verify it without trusting us.</p>
       <div class="cta">
         <a href="#request" class="btn solid">Request access →</a>
         <a href="#capabilities" class="btn">Explore the platform</a>
@@ -292,7 +292,7 @@
     <div><div class="k">Objects tracked</div><div class="v" id="s-obj">—</div></div>
     <div><div class="k">Catalogue source</div><div class="v sm" id="s-src">—</div></div>
     <div><div class="k">Archived events</div><div class="v" id="s-arc">—</div></div>
-    <div><div class="k">Platform</div><div class="v sm on" id="s-up">—</div></div>
+    <div><div class="k">Archive integrity</div><div class="v sm on" id="s-ver">—</div></div>
   </div>
 </div></header>
 
@@ -312,17 +312,22 @@
 <section id="moat"><div class="wrap">
   <div class="reveal">
     <div class="stitle">The difference</div>
-    <h2>Anyone can show you the sky today. We can show you what it did.</h2>
+    <h2>Anyone can show you the sky today. We can prove what it did.</h2>
   </div>
   <div class="split">
     <div class="reveal">
       <p class="ssub" style="margin-top:24px">Public catalogues are a snapshot — they tell you where objects are right now and forget everything else. OrbitIQ writes every detection into a permanent intelligence archive at the moment it happens. That record cannot be reconstructed later from public sources, by us or by anyone else.</p>
       <ul class="points">
         <li><b>01</b><span>Every conjunction, congestion shift, re-entry and environmental event is archived at detection time.</span></li>
-        <li><b>02</b><span>Trends are measured against what we actually observed, not back-filled from today's catalogue.</span></li>
-        <li><b>03</b><span>An independent pipeline refreshes the catalogue every six hours, so the picture never silently goes stale.</span></li>
-        <li><b>04</b><span>The longer the platform runs, the less replaceable the history becomes.</span></li>
+        <li><b>02</b><span>Each entry carries the hash of the entry before it. Editing, deleting or reordering any record breaks the chain — and verification names the exact row where it broke.</span></li>
+        <li><b>03</b><span>The tip of the chain is published hourly to a public branch. GitHub timestamps those commits, so a seal published last March is independent evidence of what the archive held last March.</span></li>
+        <li><b>04</b><span>Trends are measured against what we actually observed, not back-filled from today&rsquo;s catalogue.</span></li>
+        <li><b>05</b><span>The longer the platform runs, the less replaceable the history becomes.</span></li>
       </ul>
+      <p class="ssub" style="margin-top:22px">Check it yourself, without an account:
+        <a href="/api/archive/verify" style="color:#38bdf8;text-decoration:none">/api/archive/verify</a>.
+        An integrity claim only the vendor can test is not an integrity claim.</p>
+      <p class="ssub" style="margin-top:14px;opacity:.72;font-size:13px">Stated plainly: this is tamper-<em>evident</em>, not tamper-proof. It shows the record has not been edited since a published seal. It is not a cryptographic signature and does not assert who wrote the rows.</p>
     </div>
     <div class="quotebox reveal">
       <svg class="orbit-mini" viewBox="0 0 100 100">
@@ -424,7 +429,7 @@ const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /* ===================== headline word reveal ===================== */
 (() => {
-  const parts = [["Know what is coming",0],["before it reaches your fleet.",1]];
+  const parts = [["Know what is coming.",0],["Prove what you knew.",1]];
   $("h1").innerHTML = parts.map(([txt,grad]) =>
     txt.split(" ").map((w,i) => `<span class="w${grad?" grad":""}" style="animation-delay:${.35+i*.07+grad*.42}s">${w}</span>`).join(" ")
   ).join(" ");
@@ -675,8 +680,15 @@ function countTo(el, target) {
     const src = s.dataSource?.source || "—";
     $("s-src").textContent = src === "mirror" ? "Live mirror" : src === "live" ? "Live upstream" : src;
     countTo($("s-arc"), s.archive?.totalEvents ?? 0);
-    $("s-up").textContent = s.ok ? "Operational" : "Degraded";
-  } catch { $("s-up").textContent = "Checking…"; }
+    // Read the real verification result rather than printing a reassuring
+    // constant: if the chain ever breaks, the landing page should say so.
+    try {
+      const v = await (await fetch("/api/archive/verify", { cache: "no-store" })).json();
+      const el = $("s-ver");
+      el.textContent = v.ok ? "Chain verified" : "Break at #" + (v.seq ?? v.atIndex);
+      if (!v.ok) el.classList.remove("on");
+    } catch { $("s-ver").textContent = "Checking…"; }
+  } catch { $("s-ver").textContent = "Checking…"; }
 })();
 
 /* ===================== plans ===================== */
