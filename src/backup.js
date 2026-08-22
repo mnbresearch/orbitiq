@@ -28,6 +28,12 @@ const FILES = [
   { local: path.join(DATA_DIR, "ledger.jsonl"), remote: "backup/ledger.jsonl", capLines: MAX_LEDGER_LINES },
   { local: path.join(DATA_DIR, "store.json"), remote: "backup/store.json" },
   { local: path.join(DATA_DIR, "auth.json"), remote: "backup/auth.json" },
+  // The seals are the point of the whole exercise: publishing the tip hash to
+  // a branch whose commits GitHub timestamps is what turns "we did not edit
+  // this" from an assertion into something a third party can check. They are
+  // tiny, so they go up on every backup rather than on a slower cadence.
+  { local: path.join(DATA_DIR, "ledger-seals.json"), remote: "backup/ledger-seals.json" },
+  { local: path.join(DATA_DIR, "ledger-anchor.json"), remote: "backup/ledger-anchor.json" },
   { local: path.join(DATA_DIR, "elements-history.json"), remote: "backup/elements-history.json" }
 ];
 
