@@ -691,11 +691,25 @@ api.get("/archive/verify", (req, res) => {
     ...v,
     seals: ledger.seals().slice(-5),
     anchor: ledger.anchor(),
+    witness: {
+      // Pointing at the external record is part of the claim. A verification
+      // response that only says "trust me, it verifies" is worth nothing to
+      // the party who most needs to check it.
+      log: "https://github.com/mnbresearch/orbitiq/blob/witness/witness/log.jsonl",
+      runs: "https://github.com/mnbresearch/orbitiq/actions/workflows/witness.yml",
+      how: "An hourly GitHub Actions run fetches THIS endpoint over the public internet and records "
+         + "the tip hash it saw, together with the run id. Those runs are timestamped by GitHub and "
+         + "their logs cannot be edited afterwards by the repository owner, so the observation is "
+         + "external to us. Compare any tipHash below against the witness log for the same hour."
+    },
     published: "Seals are mirrored to the data-backup branch of github.com/mnbresearch/orbitiq. "
-             + "GitHub timestamps those commits, so a seal published before a given date is "
-             + "independent evidence of what the archive contained on that date.",
-    limits: "Tamper-evident, not tamper-proof. This proves the record has not been edited since "
-          + "a published seal. It is not a signature and does not attest who wrote the rows."
+             + "Note that branch is force-pushed flat by design and is NOT evidence — the witness "
+             + "branch and the Actions run history are.",
+
+    limits: "Tamper-evident, not tamper-proof, with GitHub as the notary — exactly as strong as "
+          + "trusting GitHub's timestamps, no more. It shows a hash was publicly observable at a "
+          + "given time. It is not a signature, does not attest who wrote the rows, and is not a "
+          + "blockchain."
   });
 });
 api.get("/archive/seals", (req, res) => res.json({ seals: ledger.seals(), anchor: ledger.anchor() }));
