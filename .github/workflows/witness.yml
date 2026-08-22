@@ -1,0 +1,161 @@
+# ============================================================
+# OrbitIQ external witness.
+#
+# ── What problem this solves ────────────────────────────────
+# The archive hash-chains itself, which makes editing it detectable. But a
+# chain we compute, over a file we hold, sealed by a process we run, is still
+# entirely ours. Someone who does not trust us can reasonably ask: what stops
+# you rebuilding the whole chain from scratch and re-sealing it?
+#
+# Nothing does — unless something outside our control recorded the old tip
+# before we changed it. That is the entire job of this workflow.
+#
+# ── Why this particular witness ─────────────────────────────
+# Every hour this job reaches the PUBLIC endpoint over the internet, exactly as
+# a stranger would, and records what the service said. It writes that
+# observation to two places with different properties:
+#
+#   1. The `witness` branch, as an ordinary commit with a real parent. Unlike
+#      the data-backup branch (which is force-pushed flat on purpose so the
+#      repo does not grow forever), this history is append-only, so rewriting
+#      it leaves the commit graph visibly discontinuous.
+#
+#   2. This workflow run's log and metadata. That is the stronger of the two:
+#      GitHub timestamps the run, and the repository owner CANNOT edit the log
+#      of a run that already happened. We can delete runs; we cannot forge one
+#      dated last March.
+#
+# That asymmetry is the point. The mechanism here is trivial to copy — any
+# competitor can hash-chain a ledger and run a cron job tomorrow. What they
+# cannot do is produce a witness record dated a year ago for data they did not
+# hold a year ago. The moat is not the code. It is the accumulated, externally
+# observed history, and this is the machinery that makes that history mean
+# something to a third party.
+#
+# ── What this is NOT ────────────────────────────────────────
+# GitHub is the notary here, so the guarantee is exactly as strong as trusting
+# GitHub's timestamps — no more. This is not a blockchain, not an RFC-3161
+# signature, and not proof of who wrote a row. It is evidence that a specific
+# hash was publicly observable at a specific time. Anyone claiming more than
+# that from a scheme like this is overselling it.
+#
+# Cost: nothing. Public repositories get unlimited standard-runner minutes.
+# ============================================================
+name: Witness
+
+on:
+  schedule:
+    - cron: "17 * * * *"   # hourly, offset from screening (:37) and backup
+  workflow_dispatch: {}
+
+concurrency:
+  group: orbitiq-witness
+  cancel-in-progress: false   # never drop a witness record to start a newer one
+
+permissions:
+  contents: write
+
+jobs:
+  witness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Observe the public endpoint
+        id: observe
+        env:
+          URL: https://orbit.mnbresearch.com/api/archive/verify
+        run: |
+          # Deliberately fetched over the public internet rather than read from
+          # a shared volume: the record should say what an outside observer
+          # could see, not what our own process believes about its own disk.
+          code=$(curl -s -o /tmp/v.json -w "%{http_code}" --max-time 90 \
+                   -A "OrbitIQ-witness/1 (github.com/${{ github.repository }})" "$URL" || echo 000)
+          echo "http=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" != "200" ]; then
+            # The service sleeps outside the keep-alive window and Render's free
+            # tier can be down entirely. A missed observation is normal and must
+            # not fail the run, or the witness history fills with red herrings.
+            echo "::notice::service returned $code — recording a gap, not a failure"
+            printf '{"observed":"%s","http":"%s","note":"endpoint unreachable"}' \
+              "$(date -u +%FT%TZ)" "$code" > /tmp/rec.json
+            echo "reachable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "reachable=true" >> "$GITHUB_OUTPUT"
+          python3 - <<'EOF'
+          import json, os, datetime
+          v = json.load(open("/tmp/v.json"))
+          rec = {
+            "observed":   datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "http":       "200",
+            "chainOk":    v.get("ok"),
+            "tipSeq":     v.get("tipSeq"),
+            "tipHash":    v.get("tipHash"),
+            "verified":   v.get("verified"),
+            "unchained":  v.get("unchained"),
+            # Ties this observation back to an immutable, GitHub-timestamped run.
+            "runId":      os.environ["GITHUB_RUN_ID"],
+            "runUrl":     f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+            "witnessedBy":"github-actions"
+          }
+          json.dump(rec, open("/tmp/rec.json", "w"))
+          # Printed so it also lands in the run log, which the repository owner
+          # cannot retroactively edit.
+          print("WITNESS " + json.dumps(rec, sort_keys=True))
+          EOF
+
+      - name: Append to the witness branch
+        run: |
+          git config --global user.name  "orbitiq-witness"
+          git config --global user.email "actions@users.noreply.github.com"
+          REPO="https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
+
+          # Append-only: fetch the existing branch and add to it. Never force.
+          if git clone --branch witness --single-branch --depth 1 "$REPO" w 2>/dev/null; then
+            cd w
+          else
+            mkdir w && cd w && git init -b witness && git remote add origin "$REPO"
+            cat > README.md <<'MD'
+          # OrbitIQ witness log
+
+          One line per hourly observation of the public archive-verification
+          endpoint, recorded by a GitHub Actions run.
+
+          Each line carries the archive tip hash as reported by
+          `https://orbit.mnbresearch.com/api/archive/verify`, plus the id and URL
+          of the Actions run that observed it. Those runs are timestamped by
+          GitHub and their logs cannot be edited after the fact by the repository
+          owner, which is what makes this an external record rather than a
+          self-attestation.
+
+          This branch is append-only by policy: commits have real parents, so a
+          rewrite is visible in the commit graph. The `data-backup` branch is
+          force-pushed flat by design and is NOT evidence — do not confuse them.
+
+          **Scope of the claim.** This shows a given hash was publicly visible at
+          a given time, with GitHub as the notary. It is not a signature, does
+          not attest authorship, and is exactly as trustworthy as GitHub's
+          timestamps.
+          MD
+            git add README.md && git commit -q -m "witness log: begin"
+          fi
+
+          mkdir -p witness
+          cat /tmp/rec.json >> witness/log.jsonl
+          echo "" >> witness/log.jsonl
+          # Keep the file honest: strip accidental blank lines, keep one JSON
+          # object per line so the log stays machine-checkable.
+          grep -v '^[[:space:]]*$' witness/log.jsonl > /tmp/clean && mv /tmp/clean witness/log.jsonl
+
+          git add witness/log.jsonl
+          git commit -q -m "witness $(date -u +%FT%TZ) run ${{ github.run_id }}" || {
+            echo "nothing to record"; exit 0; }
+          git push origin witness
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### OrbitIQ witness" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/rec.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "{}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
