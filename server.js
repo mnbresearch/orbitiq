@@ -1488,8 +1488,21 @@ everyNonOverlapping(warmScreeningCache, 20 * 60 * 1000, "screening cache warm");
 everyNonOverlapping(scanAllWorkspaces, 30 * 60 * 1000, "workspace scan");
 everyNonOverlapping(async () => { const n = trend.prune(); if (n) console.log(`trend: pruned ${n} past encounters`); }, 6 * 60 * 60 * 1000, "trend prune");
 everyNonOverlapping(snapshotPopulation, 6 * 60 * 60 * 1000, "population snapshot");
-// Seal hourly. Cheap (one hash walk), and the tighter the seal cadence the
-// narrower the window in which history could be rewritten unnoticed.
+// Seal hourly — AND shortly after boot.
+//
+// The hourly timer alone produced zero seals in practice, and the reason is
+// worth writing down: everyNonOverlapping only fires after a full period has
+// elapsed, so an hourly seal needs 60 minutes of CONTINUOUS uptime. A free
+// instance that spins down, redeploys, or gets recycled more often than that
+// never reaches the first tick. The checkpoint that was supposed to anchor the
+// archive silently never happened.
+//
+// Four minutes is after the health check has settled but well inside a typical
+// uptime window, so a short-lived instance still contributes a checkpoint.
+setTimeout(() => {
+  const r = ledger.seal();
+  if (r.ok && !r.unchanged) console.log(`ledger: sealed at seq ${r.seal.seq} (${r.seal.hash})`);
+}, 4 * 60 * 1000).unref?.();
 everyNonOverlapping(async () => {
   const r = ledger.seal();
   if (r.ok && !r.unchanged) console.log(`ledger: sealed at seq ${r.seal.seq} (${r.seal.hash})`);
