@@ -23,15 +23,67 @@ let db = { users: [], requests: [], sessions: {} };
 try { db = { ...db, ...JSON.parse(fs.readFileSync(FILE, "utf8")) }; } catch { /* fresh */ }
 
 let saveTimer = null;
-function save() {
+let dirty = false;
+
+function writeNow() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    try {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-      fs.writeFileSync(FILE, JSON.stringify(db));
-    } catch (e) { console.error("auth save failed:", e.message); }
-  }, 250);
+  saveTimer = null;
+  if (!dirty) return false;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(FILE, JSON.stringify(db));
+    dirty = false;
+    return true;
+  } catch (e) { console.error("auth save failed:", e.message); return false; }
 }
+
+function save() {
+  dirty = true;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(writeNow, 250);
+  saveTimer.unref?.();
+}
+
+/**
+ * Write pending account changes to disk immediately.
+ *
+ * This exists because the shutdown path flushed the workspace store, the fleet
+ * registry and the trend tracker — and silently skipped accounts. Saves here
+ * are debounced by 250 ms, so approving a user and then redeploying (which is
+ * a completely ordinary sequence) could drop the account entirely. On a host
+ * with an ephemeral disk that loss is permanent.
+ */
+export function flush() { return writeNow(); }
+
+// ---------- password hashing (scrypt) ----------
+function hashPassword(pw) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(String(pw), salt, 64).toString("hex");
+  return salt + ":" + hash;
+}
+function verifyPassword(pw, stored) {
+  try {
+    const [salt, hash] = String(stored).split(":");
+    const test = crypto.scryptSync(String(pw), salt, 64).toString("hex");
+    return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(test, "hex"));
+  } catch { return false; }
+}
+const tempPassword = () => crypto.randomBytes(6).toString("base64url");
+
+// ---------- users ----------
+export function createUser(email, name, password, role, workspaceId) {
+  email = String(email).toLowerCase().trim();
+  if (db.users.some(u => u.email === email)) return null;
+  const user = {
+    id: crypto.randomUUID(), email, name: String(name || email).slice(0, 60),
+    passHash: hashPassword(password), role: role || "user",
+    workspaceId: workspaceId || null, mustChangePassword: role !== "admin",
+    createdAt: new Date().toISOString()
+  };
+  db.users.push(user); save();
+  return user;
+}
+
 
 // ---------- password hashing (scrypt) ----------
 function hashPassword(pw) {
