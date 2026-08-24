@@ -83,36 +83,6 @@ export function createUser(email, name, password, role, workspaceId) {
   db.users.push(user); save();
   return user;
 }
-
-
-// ---------- password hashing (scrypt) ----------
-function hashPassword(pw) {
-  const salt = crypto.randomBytes(16).toString("hex");
-  const hash = crypto.scryptSync(String(pw), salt, 64).toString("hex");
-  return salt + ":" + hash;
-}
-function verifyPassword(pw, stored) {
-  try {
-    const [salt, hash] = String(stored).split(":");
-    const test = crypto.scryptSync(String(pw), salt, 64).toString("hex");
-    return crypto.timingSafeEqual(Buffer.from(hash, "hex"), Buffer.from(test, "hex"));
-  } catch { return false; }
-}
-const tempPassword = () => crypto.randomBytes(6).toString("base64url");
-
-// ---------- users ----------
-export function createUser(email, name, password, role, workspaceId) {
-  email = String(email).toLowerCase().trim();
-  if (db.users.some(u => u.email === email)) return null;
-  const user = {
-    id: crypto.randomUUID(), email, name: String(name || email).slice(0, 60),
-    passHash: hashPassword(password), role: role || "user",
-    workspaceId: workspaceId || null, mustChangePassword: role !== "admin",
-    createdAt: new Date().toISOString()
-  };
-  db.users.push(user); save();
-  return user;
-}
 export const findUser = email => db.users.find(u => u.email === String(email).toLowerCase().trim()) || null;
 export const getUser = id => db.users.find(u => u.id === id) || null;
 export const listUsers = () => db.users.map(({ passHash, ...u }) => u);
