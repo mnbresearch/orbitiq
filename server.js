@@ -993,6 +993,7 @@ api.post("/admin/access-requests/:id/approve", requireAdmin, async (req, res) =>
       plan: store.PLANS[plan]?.label || plan, apiKey: w.apiKey
     }).catch(() => {});
   }
+  backupSoon("access approval");
   res.json({
     ok: true, email: r0.email, tempPassword: r.tempPassword, emailed,
     workspace: { id: w.id, apiKey: w.apiKey, plan, org: w.org },
@@ -1008,6 +1009,7 @@ api.post("/admin/access-requests/:id/deny", requireAdmin, (req, res) => {
   if (r0 && mailer.enabled() && req.body?.notify !== false) {
     mailer.sendDecline({ email: r0.email, name: r0.name }).catch(() => {});
   }
+  backupSoon("access decline");
   res.json({ ...r, emailed: mailer.enabled() });
 });
 api.get("/admin/users", requireAdmin, (req, res) => {
@@ -1035,6 +1037,7 @@ api.post("/admin/users/:id/email", requireAdmin, async (req, res) => {
       name: target.name, by: req.user?.email || "an administrator"
     }).catch(() => {});
   }
+  backupSoon("email change");
   res.json({
     ok: true, previous, email: r.email, revokedSessions: r.revokedSessions, emailed,
     note: "The user must sign in again with the new address. Both the old and new "
@@ -1192,6 +1195,13 @@ api.get("/status", async (req, res) => {
     archive: ledger.stats(),
     backup: backup.status(),
     mail: mailer.status(),
+    secrets: {
+      backupKeyConfigured: backup.canProtectSecrets?.() === true,
+      note: backup.canProtectSecrets?.() === true
+        ? "Accounts and workspace keys are encrypted before backup."
+        : "ORBITIQ_BACKUP_KEY is not set or malformed: accounts and workspace keys are NOT being backed up. "
+        + "They will be lost on the next redeploy."
+    },
     fleets: fleet.stats(),
     trends: trend.stats(),
     // Surfaced so a misconfigured cap is visible rather than silently turning
@@ -1244,6 +1254,7 @@ api.post("/admin/scan-all", requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 api.post("/admin/workspaces/:id/plan", requireAdmin, (req, res) => {
+  backupSoon("plan change");
   const w = store.setPlan(req.params.id, req.body?.plan);
   w ? res.json({ ok: true, id: w.id, plan: w.plan }) : res.status(404).json({ error: "Workspace not found" });
 });
@@ -1429,16 +1440,62 @@ async function intelligenceSweep() {
     backup.backup();
   } catch (e) { console.error("intelligence sweep failed:", e.message); }
 }
-// best-effort final backup when Render recycles the instance
-process.on("SIGTERM", async () => {
-  // Flush the store before backing up, otherwise anything written in the last
-  // few hundred ms is lost — and with the old unbounded debounce, potentially
-  // everything since boot.
-  try { store.flushStore?.(); } catch { /* best effort */ }
-  try { fleet.flush?.(); } catch { /* best effort */ }
-  try { trend.flush?.(); } catch { /* best effort */ }
-  try { await backup.backup(); } finally { process.exit(0); }
-});
+// ---------- persist-on-change ----------
+// The archive used to be backed up only after an intelligence sweep, which is
+// every six hours. Accounts and workspaces change on a completely different
+// clock: approve an operator, and that record sat on an ephemeral disk for up
+// to six hours with nothing off-box. Coalesced so a burst of admin actions
+// produces one upload, delayed so it never lands on the request path.
+let mutationBackupTimer = null;
+function backupSoon(reason) {
+  if (mutationBackupTimer) return;
+  mutationBackupTimer = setTimeout(async () => {
+    mutationBackupTimer = null;
+    try {
+      await backup.backup();
+      console.log(`backup: persisted after ${reason}`);
+    } catch (e) { console.error("mutation backup failed:", e.message); }
+  }, 90 * 1000);
+  mutationBackupTimer.unref?.();
+}
+
+// ---------- shutdown ----------
+// Render sends SIGTERM on every deploy and recycle, and the local disk does
+// not survive. So the ordering here matters: get everything onto disk first
+// (cheap, synchronous, cannot hang), and only then attempt the network backup.
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal}: flushing state before exit`);
+
+  // 1. Synchronous flushes. auth was missing from this list, which meant a user
+  //    approved in the 250 ms before a deploy was simply gone — and with an
+  //    ephemeral disk, gone permanently.
+  for (const [label, fn] of [
+    ["auth",  () => auth.flush?.()],
+    ["store", () => store.flushStore?.()],
+    ["fleet", () => fleet.flush?.()],
+    ["trend", () => trend.flush?.()],
+    ["ledger seal", () => ledger.seal?.()]
+  ]) {
+    try { fn(); } catch (e) { console.error(`${label} flush failed:`, e.message); }
+  }
+
+  // 2. Bounded network backup. Render allows a limited grace period and then
+  //    SIGKILLs; a hung fetch that consumes all of it would take the backup
+  //    down with it. Racing a timer means a slow network costs us the upload,
+  //    not the shutdown.
+  try {
+    await Promise.race([
+      backup.backup(),
+      new Promise(r => setTimeout(() => r({ timedOut: true }), 8000))
+    ]);
+  } catch (e) { console.error("shutdown backup failed:", e.message); }
+  process.exit(0);
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 // An unhandled rejection terminates the process by default on Node 20+, and
 // several public async routes had code paths outside their try/catch. Log and
