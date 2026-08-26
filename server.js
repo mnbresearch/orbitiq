@@ -1353,8 +1353,14 @@ async function scanWorkspace(ws) {
   if (fresh.length) {
     broadcast("alerts", { workspaceId: ws.id, count: fresh.length, top: fresh.slice(0, 3) });
     if (ws.webhook) {
+      // The URL here is customer-supplied, so it must be assumed hostile-by-
+      // accident: an endpoint that accepts the connection and never responds
+      // would otherwise pin a socket forever, and one per alert cycle adds up
+      // on a 512 MB instance. Ten seconds is generous for a notification.
       fetch(ws.webhook, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST",
+        signal: AbortSignal.timeout(10000),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source: "OrbitIQ", workspace: ws.name, newAlerts: fresh.slice(0, 10) })
       }).catch(err => console.error(`webhook ${ws.name} failed:`, err.message));
     }
