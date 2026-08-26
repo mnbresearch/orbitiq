@@ -117,12 +117,23 @@ export function validateWebhookUrl(raw) {
  * host we allowed can answer 302 to somewhere internal, which would sail past
  * the check. Each hop is re-validated, and the chain is capped.
  */
-export async function safeFetch(url, init = {}, maxHops = 3) {
+export async function safeFetch(url, init = {}, maxHops = 3, budgetMs = 10000) {
   let current = url;
+  // A per-hop timeout alone is not a bound: with maxHops redirects, a server
+  // that stalls just under the limit on every hop multiplies the wait. Track a
+  // single deadline across the whole chain and give each hop only what is left.
+  const deadline = Date.now() + budgetMs;
   for (let hop = 0; hop <= maxHops; hop++) {
     const v = validateWebhookUrl(current);
     if (v.error) return { ok: false, error: `Blocked redirect target: ${v.error}` };
-    const res = await fetch(v.url, { ...init, redirect: "manual" });
+    const left = deadline - Date.now();
+    if (left <= 0) return { ok: false, error: "Timed out following redirects" };
+    const res = await fetch(v.url, {
+      // Caller-supplied signal still wins; this is a floor, not a ceiling.
+      signal: AbortSignal.timeout(left),
+      ...init,
+      redirect: "manual"
+    });
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get("location");
       if (!loc) return { ok: res.ok, status: res.status, res };
