@@ -849,9 +849,13 @@ const relTime = (iso) => {
   const setBand = (k, key) => {
     const n = Number(b[key] || 0);
     $("bc-" + k).textContent = n.toLocaleString();
-    // rAF so the width transition actually runs rather than being applied
-    // in the same frame the element is first painted.
-    requestAnimationFrame(() => { $("bf-" + k).style.width = (100 * n / max) + "%"; });
+    // Set the width directly. This used to sit inside requestAnimationFrame,
+    // which does NOT fire in a background tab — so anyone who opened this page
+    // in a new tab saw the counts with no bars until they focused it, on a
+    // section whose whole job is to show the numbers. The snapshot fetch
+    // already resolves long after first paint, so the CSS transition still
+    // animates without the extra frame.
+    $("bf-" + k).style.width = (100 * n / max) + "%";
   };
   setBand("c", "CRITICAL"); setBand("h", "HIGH");
   setBand("m", "MODERATE"); setBand("l", "LOW");
