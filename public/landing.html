@@ -252,6 +252,52 @@
     *{animation-duration:.01ms !important;transition-duration:.01ms !important}
     .reveal{opacity:1;transform:none}
   }
+  /* ---------- live record panel ----------
+     The claim on this page is that the archive is real and checkable. Prose
+     cannot carry that; only the actual numbers can. Everything below renders
+     from a single /api/v1/snapshot call. */
+  .rec{display:grid;grid-template-columns:1.15fr .85fr;gap:22px;margin-top:30px}
+  @media(max-width:900px){.rec{grid-template-columns:1fr}}
+  .card{background:linear-gradient(180deg,rgba(18,26,42,.86),rgba(12,18,30,.86));
+        border:1px solid rgba(120,160,220,.16);border-radius:16px;padding:22px 22px 20px}
+  .card h3{margin:0 0 4px;font-size:15px;letter-spacing:.02em;color:#dbe7f7;font-weight:600}
+  .card .sub{margin:0 0 16px;font-size:12.5px;line-height:1.5;color:#8ba3c2}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:9px 16px;font-size:13.5px;align-items:baseline}
+  .kv dt{color:#8ba3c2;white-space:nowrap}
+  .kv dd{margin:0;color:#e8f0fa;font-variant-numeric:tabular-nums}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+        color:#7fd7ff;word-break:break-all;line-height:1.45}
+  .pill{display:inline-flex;align-items:center;gap:7px;padding:4px 11px;border-radius:999px;
+        font-size:12px;font-weight:600;letter-spacing:.02em}
+  .pill.ok{background:rgba(34,197,94,.13);color:#66e29a;border:1px solid rgba(34,197,94,.3)}
+  .pill.bad{background:rgba(239,68,68,.13);color:#fca5a5;border:1px solid rgba(239,68,68,.34)}
+  .pill.warm{background:rgba(148,163,184,.13);color:#a8bdd6;border:1px solid rgba(148,163,184,.28)}
+  .pill i{width:7px;height:7px;border-radius:50%;background:currentColor;display:block}
+  /* The dot only pulses when the chain is actually verified — a page that
+     animates reassuringly while the chain is broken would be lying. */
+  .pill.ok i{animation:recPulse 2.4s ease-in-out infinite}
+  @keyframes recPulse{0%,100%{opacity:1}50%{opacity:.35}}
+  .bands{display:grid;gap:8px;margin-top:4px}
+  .band{display:grid;grid-template-columns:78px 1fr auto;gap:11px;align-items:center;font-size:12.5px}
+  .band .nm{color:#8ba3c2;letter-spacing:.02em}
+  .band .tr{height:7px;border-radius:99px;background:rgba(120,160,220,.12);overflow:hidden}
+  .band .fl{height:100%;border-radius:99px;width:0;transition:width .9s cubic-bezier(.22,1,.36,1)}
+  .band .ct{color:#e8f0fa;font-variant-numeric:tabular-nums;min-width:30px;text-align:right}
+  .band.c .fl{background:linear-gradient(90deg,#ef4444,#f87171)}
+  .band.h .fl{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+  .band.m .fl{background:linear-gradient(90deg,#3ec9ff,#7dd3fc)}
+  .band.l .fl{background:linear-gradient(90deg,#475569,#64748b)}
+  .tight{margin-top:16px;padding-top:15px;border-top:1px solid rgba(120,160,220,.14)}
+  .tight .big{font-size:26px;font-weight:650;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+  .tight .u{font-size:13px;color:#8ba3c2;font-weight:400}
+  .tight .who{font-size:12.5px;color:#a8bdd6;margin-top:5px;line-height:1.5}
+  .note{margin-top:14px;font-size:11.5px;line-height:1.55;color:#7e93b0}
+  .note a{color:#38bdf8;text-decoration:none}
+  .note a:hover{text-decoration:underline}
+  @media(prefers-reduced-motion:reduce){
+    .pill.ok i{animation:none}
+    .band .fl{transition:none}
+  }
 </style>
 </head>
 <body>
@@ -343,6 +389,71 @@
       </svg>
       <div class="q">“The value is not in knowing that two objects will pass close. It is in being able to prove, six months later, exactly what the sky looked like when you made the decision to manoeuvre.”</div>
       <div class="a">— Design principle, OrbitIQ intelligence archive</div>
+    </div>
+  </div>
+</div></section>
+
+<div class="divider"></div>
+
+<!-- ============================================================
+     The record, live.
+
+     The section above ARGUES that the archive is real and checkable. This one
+     shows it: every figure here is read from the running service at page load,
+     including the failure states. If the chain is broken this section says so
+     in red rather than quietly rendering the happy path — a page that always
+     claims "verified" is worth nothing as evidence, and the whole pitch is
+     that a stranger can check us.
+     ============================================================ -->
+<section id="record"><div class="wrap">
+  <div class="reveal">
+    <div class="stitle">Live</div>
+    <h2>The record, as it stands right now.</h2>
+    <p class="ssub">Read from the running service when you loaded this page — not a screenshot, not a figure typed into the marketing copy. Every number below has a public endpoint behind it.</p>
+  </div>
+
+  <div class="rec">
+    <div class="card reveal">
+      <h3>Archive integrity</h3>
+      <p class="sub">Each row carries the hash of the row before it. Verification walks the whole chain and names the first row that does not reconcile.</p>
+      <div id="rec-status" style="margin-bottom:15px">
+        <span class="pill warm"><i></i> Checking…</span>
+      </div>
+      <dl class="kv">
+        <dt>Rows verified</dt><dd id="rec-verified">—</dd>
+        <dt>Chain tip</dt><dd id="rec-tipseq">—</dd>
+        <dt>History spans</dt><dd id="rec-span">—</dd>
+        <dt>Seals published</dt><dd id="rec-seals">—</dd>
+        <dt>Last seal</dt><dd id="rec-sealat">—</dd>
+      </dl>
+      <div style="margin-top:14px">
+        <div style="font-size:11.5px;color:#8ba3c2;margin-bottom:5px">Tip hash</div>
+        <div class="mono" id="rec-tip">—</div>
+      </div>
+      <p class="note">
+        Verify it yourself, no account required:
+        <a href="/api/v1/archive/verify">/api/v1/archive/verify</a> ·
+        <a href="https://github.com/mnbresearch/orbitiq/blob/witness/witness/log.jsonl" rel="noopener">external witness log</a><br>
+        An hourly GitHub Actions run fetches that endpoint over the public internet and records the tip hash it saw. Those runs are timestamped by GitHub and their logs cannot be edited afterwards, so the observation is external to us.<br>
+        <span style="opacity:.75">Tamper-<em>evident</em>, not tamper-proof — GitHub is the notary, so this is exactly as strong as trusting GitHub&rsquo;s timestamps. It shows a hash was publicly observable at a time; it is not a signature and does not attest authorship.</span>
+      </p>
+    </div>
+
+    <div class="card reveal" style="transition-delay:.08s">
+      <h3>Conjunctions archived, last 7 days</h3>
+      <p class="sub">Screened against the live catalogue and written to the archive at detection time.</p>
+      <div class="bands">
+        <div class="band c"><span class="nm">Critical</span><span class="tr"><span class="fl" id="bf-c"></span></span><span class="ct" id="bc-c">—</span></div>
+        <div class="band h"><span class="nm">High</span><span class="tr"><span class="fl" id="bf-h"></span></span><span class="ct" id="bc-h">—</span></div>
+        <div class="band m"><span class="nm">Moderate</span><span class="tr"><span class="fl" id="bf-m"></span></span><span class="ct" id="bc-m">—</span></div>
+        <div class="band l"><span class="nm">Low</span><span class="tr"><span class="fl" id="bf-l"></span></span><span class="ct" id="bc-l">—</span></div>
+      </div>
+      <div class="tight">
+        <div style="font-size:11.5px;color:#8ba3c2;margin-bottom:4px">Closest approach in the window</div>
+        <div><span class="big" id="rec-miss">—</span> <span class="u">km</span></div>
+        <div class="who" id="rec-pair">—</div>
+      </div>
+      <p class="note" id="rec-pcnote"></p>
     </div>
   </div>
 </div></section>
@@ -673,22 +784,97 @@ function countTo(el, target) {
     if (k < 1) requestAnimationFrame(step);
   })(t0);
 }
+/* ===================== live record =====================
+   One request feeds both the hero strip and the record panel.
+   This used to be two calls (/api/status then /api/archive/verify). On a free
+   instance that cold-starts in ~50 s, two sequential fetches against a waking
+   process meant the strip populated in two visible jerks, and a slow second
+   call left "Chain verified" blank on a page whose entire argument is that the
+   chain can be checked. /api/v1/snapshot answers both in one round trip. */
+const relTime = (iso) => {
+  if (!iso) return "—";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (!Number.isFinite(s)) return "—";
+  if (s < 90) return "just now";
+  if (s < 5400) return Math.round(s / 60) + " min ago";
+  if (s < 172800) return Math.round(s / 3600) + " h ago";
+  return Math.round(s / 86400) + " days ago";
+};
+
 (async () => {
+  let j;
   try {
-    const s = await (await fetch("/api/status", { cache: "no-store" })).json();
-    countTo($("s-obj"), s.catalogObjects || 0);
-    const src = s.dataSource?.source || "—";
-    $("s-src").textContent = src === "mirror" ? "Live mirror" : src === "live" ? "Live upstream" : src;
-    countTo($("s-arc"), s.archive?.totalEvents ?? 0);
-    // Read the real verification result rather than printing a reassuring
-    // constant: if the chain ever breaks, the landing page should say so.
-    try {
-      const v = await (await fetch("/api/archive/verify", { cache: "no-store" })).json();
-      const el = $("s-ver");
-      el.textContent = v.ok ? "Chain verified" : "Break at #" + (v.seq ?? v.atIndex);
-      if (!v.ok) el.classList.remove("on");
-    } catch { $("s-ver").textContent = "Checking…"; }
-  } catch { $("s-ver").textContent = "Checking…"; }
+    j = await (await fetch("/api/v1/snapshot", { cache: "no-store" })).json();
+  } catch {
+    // Say the service is unreachable rather than leaving "—" everywhere, which
+    // reads as a broken page rather than a sleeping free-tier instance.
+    $("s-ver").textContent = "Service waking…";
+    $("rec-status").innerHTML = '<span class="pill warm"><i></i> Service unreachable</span>';
+    return;
+  }
+
+  /* ---- hero strip ---- */
+  if (j.catalogue?.status === "ok") {
+    countTo($("s-obj"), j.catalogue.total || 0);
+    const src = j.catalogue.source?.source || j.catalogue.source || "—";
+    $("s-src").textContent = src === "mirror" ? "Live mirror" : src === "live" ? "Live upstream" : String(src);
+  } else {
+    // Never render 0 objects during warm-up: zero is a measurement, not a
+    // placeholder, and on this page it would read as an empty sky.
+    $("s-obj").textContent = "—";
+    $("s-src").textContent = "Loading catalogue…";
+  }
+  countTo($("s-arc"), j.archive?.rows ?? 0);
+
+  const ok = !!j.integrity?.ok;
+  const vEl = $("s-ver");
+  vEl.textContent = ok ? "Chain verified" : "Break at #" + (j.integrity?.tipSeq ?? "?");
+  if (!ok) vEl.classList.remove("on");
+
+  /* ---- integrity card ---- */
+  $("rec-status").innerHTML = ok
+    ? '<span class="pill ok"><i></i> Chain verified</span>'
+    : '<span class="pill bad"><i></i> Chain broken — ' + esc(j.integrity?.reason || "unreconciled row") + '</span>';
+  $("rec-verified").textContent = (j.integrity?.verified ?? 0).toLocaleString();
+  $("rec-tipseq").textContent  = j.integrity?.tipSeq != null ? "#" + j.integrity.tipSeq : "—";
+  $("rec-span").textContent    = j.archive?.spanDays
+    ? j.archive.spanDays.toFixed(1) + " days" : "just started";
+  $("rec-seals").textContent   = (j.archive?.seals ?? 0).toLocaleString();
+  $("rec-sealat").textContent  = relTime(j.archive?.lastSealAt);
+  $("rec-tip").textContent     = j.integrity?.tipHash || "—";
+
+  /* ---- conjunction bands ---- */
+  const b = j.conjunctions?.bands || {};
+  const max = Math.max(1, ...Object.values(b).map(Number).filter(Number.isFinite));
+  const setBand = (k, key) => {
+    const n = Number(b[key] || 0);
+    $("bc-" + k).textContent = n.toLocaleString();
+    // rAF so the width transition actually runs rather than being applied
+    // in the same frame the element is first painted.
+    requestAnimationFrame(() => { $("bf-" + k).style.width = (100 * n / max) + "%"; });
+  };
+  setBand("c", "CRITICAL"); setBand("h", "HIGH");
+  setBand("m", "MODERATE"); setBand("l", "LOW");
+
+  const t = j.conjunctions?.tightest;
+  if (t) {
+    $("rec-miss").textContent = Number(t.missKm).toFixed(2);
+    const pc = Number(t.pc);
+    const pcTxt = Number.isFinite(pc) && pc > 0 ? pc.toExponential(1) : "not computed";
+    $("rec-pair").innerHTML = esc(t.a || "?") + " · " + esc(t.b || "?")
+      + "<br>P<sub>c</sub> " + pcTxt
+      + (t.altKm != null ? " · " + Math.round(t.altKm) + " km altitude" : "");
+  } else {
+    $("rec-miss").textContent = "—";
+    $("rec-pair").textContent = j.conjunctions?.screened
+      ? "No miss distance recorded in this window."
+      : "No conjunctions archived in the last 7 days yet.";
+  }
+
+  // Carry the method caveat through to the page. If some rows predate the
+  // Foster unification their probabilities are biased low, and the public
+  // surface should say so rather than presenting one mixed number.
+  if (j.conjunctions?.pcNote) $("rec-pcnote").textContent = j.conjunctions.pcNote;
 })();
 
 /* ===================== plans ===================== */

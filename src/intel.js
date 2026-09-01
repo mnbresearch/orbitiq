@@ -6,16 +6,41 @@
 import * as satellite from "satellite.js";
 
 import { EARTH_R_KM as RE, MU_KM3_S2 as MU } from "./constants.js";
+import * as pcmod from "./pc.js";
+import { elementAgeDays, kindOf, stateAt } from "./orbitstate.js";
 const C_KM_S = 299792.458;
 
 const rec = s => { try { return satellite.json2satrec(s.gp); } catch { return null; } };
 const posVel = (r, t) => { try { const pv = satellite.propagate(r, t); return pv?.position && !Number.isNaN(pv.position.x) ? pv : null; } catch { return null; } };
-const tleAgeDays = s => Math.max(0, (Date.now() - new Date(s.epoch).getTime()) / 86400000);
+// An unparseable or missing epoch used to yield NaN, which propagated through
+// screeningPc into `pc: null` — and that null would be written into the
+// append-only ledger, where it cannot be corrected later. Fall back to a
+// deliberately pessimistic 3 days instead: a wide covariance understates
+// nothing and is visibly conservative, whereas null is silently useless.
+const tleAgeDays = s => {
+  const t = new Date(s?.epoch).getTime();
+  if (!Number.isFinite(t)) return 3;
+  return Math.max(0, (Date.now() - t) / 86400000);
+};
 
 // ---------- probability of collision (2D screening Pc) ----------
 // Assumed covariance model: per-object 1-sigma position uncertainty grows
 // with TLE age (base 1.0 km + 0.75 km/day, capped at 6 km). Combined
 // hard-body radius default 20 m. Standard small-HBR 2D approximation.
+/**
+ * FALLBACK ONLY. Isotropic closed-form Pc from miss distance and element age.
+ *
+ * ⚠ This is BIASED LOW and must not be presented as equivalent to the Foster
+ * result. It models the combined covariance as a circle, but orbital position
+ * error is dominated by the along-track component, so the true covariance is a
+ * long thin ellipse. Circularising it spreads probability mass over an area
+ * much larger than the real one and the answer comes out too small — measured
+ * across 135 geometries: lower in 100% of cases, median 5.3x, worst 32x.
+ *
+ * Kept because it needs only a miss distance, so it still works when SGP4
+ * cannot produce a state vector at TCA. Callers MUST label rows produced this
+ * way (see `pcMethod` in augmentConjunctions). Prefer pc.assess() always.
+ */
 export function screeningPc(missKm, a, b, hbrM = 20) {
   const sig = s => Math.min(6, 1.0 + 0.75 * tleAgeDays(s));
   const sA = sig(a), sB = sig(b);
@@ -30,12 +55,77 @@ export function screeningPc(missKm, a, b, hbrM = 20) {
     assumption: "Isotropic assumed covariance from TLE age; screening-grade only"
   };
 }
-export function augmentConjunctions(events, satsById) {
+/**
+ * Attach a collision probability to each screened event.
+ *
+ * ── Why this is not screeningPc any more ────────────────────
+ * It used to be. screeningPc models the combined uncertainty as a single
+ * isotropic blob, which is wrong in a specific and consequential direction:
+ * orbital position error is overwhelmingly ALONG-TRACK, so the real
+ * covariance is a long thin ellipse, not a circle. Forcing it to a circle
+ * spreads the probability mass over an area far larger than the true one,
+ * and the probability of finding the secondary inside the hard-body disc
+ * comes out too low.
+ *
+ * Measured across 135 representative geometries, the isotropic form was
+ * lower than the Foster result in 100% of cases — median 5.3x, worst 32x.
+ * These numbers go into the permanent ledger and are what an operator would
+ * act on, so understating them is the worst available failure direction.
+ *
+ * The Foster path needs real state vectors at TCA, which means propagating
+ * both objects. That costs ~0.15 ms per event (measured), so screening a
+ * full 100-event set adds ~15 ms — affordable, and worth it.
+ *
+ * Falls back to the isotropic screen ONLY when SGP4 cannot produce a state
+ * (missing or unparseable elements). Every row is labelled with the method
+ * that produced it, so a fallback row is never mistaken for a rigorous one,
+ * and rows already in the archive stay interpretable.
+ */
+export function augmentConjunctions(events, satsById, hbrM = 20) {
   return events.map(ev => {
-    const a = satsById.get(ev.a.id), b = satsById.get(ev.b.id);
+    const a = satsById.get(ev.a?.id), b = satsById.get(ev.b?.id);
     if (!a || !b) return ev;
-    return { ...ev, ...screeningPc(ev.missKm, a, b) };
+
+    const tca = new Date(ev.tca);
+    const sa = Number.isFinite(tca.getTime()) ? stateAt(a.gp, tca) : null;
+    const sb = Number.isFinite(tca.getTime()) ? stateAt(b.gp, tca) : null;
+
+    if (sa && sb) {
+      const ageA = elementAgeDays(a.gp), ageB = elementAgeDays(b.gp);
+      const f = pcmod.assess(
+        { rA: sa.r, vA: sa.v, rB: sb.r, vB: sb.v },
+        { ageDaysA: ageA, ageDaysB: ageB, kindA: kindOf(a), kindB: kindOf(b), hbrM }
+      );
+      return {
+        ...ev,
+        pc: f.pc,
+        pcText: fmtPcText(f.pc),
+        pcBand: f.pcBand,
+        pcMaxIsotropic: f.pcMaxIsotropic,
+        combinedSigmaKm: +Math.hypot(f.encounterPlane.sigmaXKm, f.encounterPlane.sigmaYKm).toFixed(2),
+        sigmaMajorKm: f.encounterPlane.sigmaXKm,
+        sigmaMinorKm: f.encounterPlane.sigmaYKm,
+        ageDaysA: +ageA.toFixed(2),
+        ageDaysB: +ageB.toFixed(2),
+        hbrM,
+        pcMethod: "foster-2d",
+        assumption: "Foster 2D encounter-plane integration; anisotropic covariance modelled from element-set age"
+      };
+    }
+
+    // No state vector — say so rather than silently reporting a weaker number
+    // as though it were the same quantity.
+    return {
+      ...ev,
+      ...screeningPc(ev.missKm, a, b, hbrM),
+      pcMethod: "isotropic-screen",
+      pcDegraded: "No propagated state at TCA; isotropic screening value, biased LOW"
+    };
   });
+}
+
+function fmtPcText(p) {
+  return p > 0 ? "1e" + Math.ceil(Math.log10(Math.min(1, p))) : "0";
 }
 
 // ---------- TLE staleness / data quality ----------

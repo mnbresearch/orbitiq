@@ -18,31 +18,12 @@ import * as mailer from "./mailer.js";
 import { EARTH_R_KM as EARTH_R } from "./constants.js";
 
 // ─────────────────── element-set age ───────────────────
-/** Age of a TLE/GP element set in days. Drives the covariance model. */
-export function elementAgeDays(gp) {
-  const epoch = gp?.EPOCH || gp?.epoch;
-  if (!epoch) return 3;                       // unknown: assume stale-ish
-  const t = new Date(epoch).getTime();
-  if (!Number.isFinite(t)) return 3;
-  return Math.max(0, (Date.now() - t) / 86400000);
-}
-
-function kindOf(sat) {
-  const n = `${sat?.name || ""} ${sat?.objectType || ""}`;
-  if (/deb/i.test(n)) return "debris";
-  if (/r\/b|rocket/i.test(n)) return "rocket body";
-  return "payload";
-}
-
-/** State vector at a given time, ECI km and km/s. */
-function stateAt(gp, when) {
-  try {
-    const rec = satellite.json2satrec(gp);
-    const pv = satellite.propagate(rec, when);
-    if (!pv?.position || Number.isNaN(pv.position.x)) return null;
-    return { r: pv.position, v: pv.velocity };
-  } catch { return null; }
-}
+// These three helpers moved to src/orbitstate.js so the intelligence sweep
+// can use the SAME ones. It previously had its own cheaper substitute, which
+// is why the archive and this module disagreed about the same conjunction.
+// Re-exported here so existing importers of watch.elementAgeDays still work.
+import { elementAgeDays, kindOf, stateAt } from "./orbitstate.js";
+export { elementAgeDays, kindOf, stateAt };
 
 /**
  * Take a screening event and turn it into a full assessment: real

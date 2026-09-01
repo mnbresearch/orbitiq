@@ -394,4 +394,170 @@ export function planManoeuvre(enc, opts = {}) {
   };
 }
 
+// ============================================================
+// Solve to a probability threshold rather than to a distance
+// ============================================================
+/**
+ * Smallest along-track drift (km) that brings Foster Pc at or below `targetPc`.
+ *
+ * ── Why this exists alongside driftForTarget ────────────────
+ * planManoeuvre solves to a target MISS DISTANCE. That is not the quantity
+ * operators actually hold themselves to. Flight-safety policy is written as a
+ * probability threshold — "manoeuvre if Pc exceeds 1e-4" — and distance is a
+ * poor proxy for it: a 1 km miss with tight, fresh covariance can be safer
+ * than a 5 km miss between two week-old debris element sets. Solving to
+ * distance therefore either over-burns or under-burns depending on how well
+ * the two objects happen to be tracked.
+ *
+ * ── Why a scan-then-bisect rather than a root solver ────────
+ * Pc as a function of drift is NOT monotonic. Pushing the primary along-track
+ * moves it through the point of closest approach, so Pc rises to a peak and
+ * falls away on both sides, and a naive Newton or secant step will happily
+ * converge on the wrong side or diverge off the peak. So: scan outward in
+ * both directions to bracket the first crossing, then bisect inside that
+ * bracket, which cannot skip past it. Each evaluation is ~0.15 ms, and this
+ * is bounded to a few dozen, so the whole solve is well under a millisecond.
+ *
+ * Returns null when no drift within `maxDriftKm` achieves the target — which
+ * is a real answer, not a failure: it means an along-track burn is the wrong
+ * lever for this geometry and the caller should say so rather than quote a
+ * number that would not work.
+ */
+export function driftForTargetPc(enc, targetPc, opts = {}) {
+  const {
+    hbrM = 20, maxDriftKm = 500, tolKm = 0.01,
+    ageDaysA = 1, ageDaysB = 2, kindA = "payload", kindB = "debris"
+  } = opts;
+
+  const { rA, vA, rB, vB } = enc;
+  const basis = ricBasis(rA, vA);
+  const miss = sub(rB, rA);
+  const rel = sub(vB, vA);
+  const covA = covarianceModel(ageDaysA, kindA);
+  const covB = covarianceModel(ageDaysB, kindB);
+
+  /** Pc after displacing the primary by `s` km along its own velocity axis. */
+  const pcAt = (s) => fosterPc(
+    { x: miss.x + basis.I.x * s, y: miss.y + basis.I.y * s, z: miss.z + basis.I.z * s },
+    rel, covA, covB, basis, hbrM
+  ).pc;
+
+  const p0 = pcAt(0);
+  if (p0 <= targetPc) {
+    return { driftKm: 0, pcAchieved: p0, alreadyBelow: true };
+  }
+
+  // Scan outward geometrically in both directions. Geometric rather than
+  // linear because the useful answer spans a wide range: a crossing geometry
+  // may need 100 m, a shallow one hundreds of km.
+  let best = null;
+  for (const dir of [1, -1]) {
+    let prev = 0, prevPc = p0, found = null;
+    for (let s = 0.02; s <= maxDriftKm; s *= 1.6) {
+      const p = pcAt(dir * s);
+      if (p <= targetPc) { found = { lo: prev, hi: s }; break; }
+      prev = s; prevPc = p;
+    }
+    if (!found) continue;
+
+    // Bisect inside the bracket. lo is above target, hi is at or below it.
+    let { lo, hi } = found;
+    for (let i = 0; i < 60 && (hi - lo) > tolKm; i++) {
+      const mid = (lo + hi) / 2;
+      if (pcAt(dir * mid) <= targetPc) hi = mid; else lo = mid;
+    }
+    const cand = { driftKm: dir * hi, pcAchieved: pcAt(dir * hi), alreadyBelow: false };
+    if (!best || Math.abs(cand.driftKm) < Math.abs(best.driftKm)) best = cand;
+  }
+  return best;   // null when the target is unreachable within maxDriftKm
+}
+
+/**
+ * Minimum Δv that brings Pc below a threshold, per lead time.
+ *
+ * This is the operationally meaningful form of the question: given that policy
+ * says "keep Pc under X", what is the cheapest burn that does it, and how much
+ * does waiting cost? Because along-track drift scales with lead time, deciding
+ * six hours earlier is dramatically cheaper — that trade is the point of
+ * reporting several lead times rather than one.
+ */
+export function planToTargetPc(enc, opts = {}) {
+  const {
+    targetPc = 1e-4, massKg = 260, ispS = 220, hbrM = 20,
+    leadsHours = [24, 12, 6, 3],
+    ageDaysA = 1, ageDaysB = 2, kindA = "payload", kindB = "debris"
+  } = opts;
+
+  const sub_ = { hbrM, ageDaysA, ageDaysB, kindA, kindB };
+  const sol = driftForTargetPc(enc, targetPc, sub_);
+
+  const current = assess(enc, { hbrM, ageDaysA, ageDaysB, kindA, kindB });
+
+  if (!sol) {
+    return {
+      targetPc,
+      currentPc: current.pc,
+      currentBand: current.pcBand,
+      achievable: false,
+      options: [],
+      note: "No along-track drift within 500 km brings the probability below the "
+          + "threshold. The relative motion is too close to along-track for a "
+          + "tangential burn to change the encounter-plane geometry — a radial or "
+          + "cross-track manoeuvre is the appropriate lever here.",
+      caveat: "Planning aid. Flight-dynamics validation and operator CDM review remain required before any burn."
+    };
+  }
+
+  if (sol.alreadyBelow) {
+    return {
+      targetPc,
+      currentPc: current.pc,
+      currentBand: current.pcBand,
+      achievable: true,
+      burnRequired: false,
+      options: [],
+      note: "Probability is already at or below the threshold. No manoeuvre is indicated on this criterion.",
+      caveat: "Planning aid. Flight-dynamics validation and operator CDM review remain required before any burn."
+    };
+  }
+
+  const options = leadsHours.map(h => {
+    const T = h * 3600;
+    const dv = deltaVForSeparation(Math.abs(sol.driftKm), T);
+    return {
+      leadHours: h,
+      deltaVms: +dv.toFixed(4),
+      propellantKg: +propellantKg(dv, massKg, ispS).toFixed(4),
+      alongTrackShiftKm: +sol.driftKm.toFixed(3),
+      pcAfter: sol.pcAchieved,
+      pcAfterBand: pcBand(sol.pcAchieved),
+      // 5 km/s is far beyond any collision-avoidance burn; past this the answer
+      // is "this is not a manoeuvre problem", not "bring more propellant".
+      feasible: dv < 5000
+    };
+  });
+
+  return {
+    targetPc,
+    currentPc: current.pc,
+    currentBand: current.pcBand,
+    achievable: true,
+    burnRequired: true,
+    requiredDriftKm: +sol.driftKm.toFixed(3),
+    pcAfter: sol.pcAchieved,
+    pcAfterBand: pcBand(sol.pcAchieved),
+    spacecraft: { massKg, ispS, hbrM },
+    options,
+    costOfDelay: (() => {
+      const f = options.find(o => o.feasible), l = options[options.length - 1];
+      if (!f || !l || f.leadHours === l.leadHours || !f.deltaVms) return null;
+      return `Deciding at T-${f.leadHours} h costs ${f.deltaVms.toFixed(2)} m/s; `
+           + `waiting until T-${l.leadHours} h costs ${l.deltaVms.toFixed(2)} m/s `
+           + `(${(l.deltaVms / f.deltaVms).toFixed(1)}x more).`;
+    })(),
+    model: "Along-track drift solved against Foster encounter-plane Pc by bracketed bisection; tangential burn via δs ≈ 3·Δv·T; propellant from the rocket equation.",
+    caveat: "Planning aid. Flight-dynamics validation and operator CDM review remain required before any burn."
+  };
+}
+
 export const constants = { MU, EARTH_R };
