@@ -714,6 +714,134 @@ api.get("/archive/verify", (req, res) => {
 });
 api.get("/archive/seals", (req, res) => res.json({ seals: ledger.seals(), anchor: ledger.anchor() }));
 
+// ---------- public snapshot: the landing page's single source ----------
+//
+// ── Why one endpoint instead of five ────────────────────────
+// This runs on a free instance that cold-starts in ~50 s. A landing page that
+// fans out to /stats + /archive/stats + /archive/verify + /conjunctions makes
+// four separate requests race a waking process, and the page renders in four
+// staggered jerks or partially fails. One call, one payload, one render.
+//
+// ── Why it reads the ledger rather than screening ───────────
+// Screening on the request path is what caused the restart loop: the compute
+// blew the 5 s health-check budget and the instance was killed mid-answer.
+// Everything below is read from the archive the sweep already wrote, or from
+// the cached catalogue. Nothing here propagates an orbit.
+//
+// ── Why it is cached for 60 s ───────────────────────────────
+// verify() walks the entire hash chain, which is O(rows) and grows forever.
+// Unauthenticated and uncached, that is a free amplification lever for anyone
+// who wants to spend our CPU. 60 s is far fresher than the hourly sweep that
+// produces the underlying data, so the cache costs no real currency.
+let snapCache = { at: 0, body: null };
+const SNAP_TTL_MS = 60_000;
+
+api.get("/snapshot", async (req, res) => {
+  try {
+    if (snapCache.body && Date.now() - snapCache.at < SNAP_TTL_MS) {
+      res.set("Cache-Control", "public, max-age=60");
+      return res.json({ ...snapCache.body, cached: true });
+    }
+
+    const v = ledger.verify();
+    const st = ledger.stats();
+    const seals = ledger.seals();
+
+    // Recent conjunctions straight from the archive. `pcMethod` is carried
+    // through deliberately: rows written before the Foster unification hold an
+    // isotropic value biased low, and a public surface must not present the two
+    // as the same quantity.
+    const since = new Date(Date.now() - 7 * 86400000).toISOString();
+    // ledger.query returns { count, events, ... } and each ROW is already one
+    // conjunction with its fields at the top level — append() spreads the
+    // payload rather than nesting it, which is also what lets query() filter
+    // on aOrg/bOrg directly.
+    const recent = ledger.query({ type: "conjunction", since, limit: 400 }).events || [];
+    const bands = { CRITICAL: 0, HIGH: 0, MODERATE: 0, LOW: 0 };
+    let tightest = null, rigorous = 0;
+    for (const e of recent) {
+      if (bands[e.risk] !== undefined) bands[e.risk]++;
+      if (e.pcMethod === "foster-2d") rigorous++;
+      if (e.missKm != null && (!tightest || e.missKm < tightest.missKm)) {
+        tightest = {
+          missKm: e.missKm, tca: e.tca, altKm: e.altKm, risk: e.risk,
+          pc: e.pc, pcMethod: e.pcMethod || "isotropic-screen",
+          a: e.aName, b: e.bName
+        };
+      }
+    }
+    const screened = Object.values(bands).reduce((a, b) => a + b, 0);
+
+    // Catalogue figures come from whatever is already cached. If the catalogue
+    // has not loaded yet we say so rather than reporting zero objects, which
+    // would read as a real measurement of an empty sky.
+    let catalogue = { status: "warming" };
+    try {
+      const sats = await getSatellites();
+      if (sats?.length) {
+        let leo = 0, meo = 0, geo = 0;
+        for (const s of sats) {
+          if (s.meanMotion > 11.25) leo++; else if (s.meanMotion > 1.5) meo++; else geo++;
+        }
+        catalogue = {
+          status: "ok", total: sats.length,
+          regimes: { LEO: leo, MEO: meo, GEO: geo },
+          source: dataSourceInfo().catalog
+        };
+      }
+    } catch { /* leave as warming */ }
+
+    const body = {
+      generatedAt: new Date().toISOString(),
+      catalogue,
+      archive: {
+        rows: st.totalEvents,
+        byType: st.byType,
+        firstRow: st.oldest,
+        latestRow: st.newest,
+        // Age of the record is the part that cannot be copied. A competitor can
+        // ship this codebase tomorrow; they cannot ship a year of observations.
+        spanDays: st.oldest && st.newest
+          ? +((new Date(st.newest) - new Date(st.oldest)) / 86400000).toFixed(2) : 0,
+        seals: seals.length,
+        // A seal's timestamp field is `at`, not `t` — `t` is the row field.
+        lastSealAt: seals[seals.length - 1]?.at || null,
+        lastSealSeq: seals[seals.length - 1]?.seq ?? null
+      },
+      integrity: {
+        ok: v.ok, tipSeq: v.tipSeq, tipHash: v.tipHash,
+        verified: v.verified, unchained: v.unchained,
+        reason: v.reason || null,
+        checkYourself: "/api/v1/archive/verify",
+        witnessLog: "https://github.com/mnbresearch/orbitiq/blob/witness/witness/log.jsonl",
+        limits: "Tamper-evident, not tamper-proof. GitHub is the notary, so this is exactly as "
+              + "strong as trusting GitHub's timestamps — it shows a hash was publicly observable "
+              + "at a time, nothing about authorship."
+      },
+      conjunctions: {
+        windowDays: 7, screened, bands, tightest,
+        rigorousPc: rigorous,
+        pcNote: rigorous < screened
+          ? "Rows marked isotropic-screen predate the Foster unification and are biased LOW; "
+            + "they are labelled rather than silently mixed with rigorous values."
+          : "All probabilities in this window are Foster 2D encounter-plane values."
+      },
+      service: {
+        // Being straight about the hosting is more credible than implying an
+        // availability guarantee this tier cannot make.
+        tier: "free-tier hosted; the instance sleeps outside the keep-alive window",
+        version: 8
+      }
+    };
+
+    snapCache = { at: Date.now(), body };
+    res.set("Cache-Control", "public, max-age=60");
+    res.json({ ...body, cached: false });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // The paid artefact: a verifiable extract for one operator over one window.
 api.get("/archive/proof", requireWs, requirePlan("operator"), (req, res) => {
   const org = req.query.org || req.workspace.org;
@@ -1152,6 +1280,48 @@ api.post("/fleet/manoeuvre", requireWs, requirePlan("operator"), async (req, res
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// Solve the burn to a PROBABILITY threshold rather than to a distance.
+//
+// This is the form flight-safety policy is actually written in — "manoeuvre if
+// Pc exceeds 1e-4" — and it is not interchangeable with a distance target. How
+// safe a given miss distance is depends entirely on how well the two objects
+// are tracked, so solving to distance over-burns on well-tracked pairs and
+// under-burns on stale ones. Both routes are kept: /manoeuvre answers "how do I
+// open this to N km", this one answers "how do I get under my policy limit".
+api.post("/fleet/manoeuvre/to-pc", requireWs, requirePlan("operator"), async (req, res) => {
+  try {
+    const { primaryId, secondaryId, targetPc } = req.body || {};
+    if (!primaryId || !secondaryId) return res.status(400).json({ error: "primaryId and secondaryId required" });
+    const asset = fleet.getAsset(req.workspace.id, primaryId);
+    if (!asset) return res.status(404).json({ error: "primaryId is not in your fleet" });
+
+    // Clamped to a band that spans every threshold in real use (1e-3 down to
+    // 1e-8). Outside it the solve is answering a question nobody asked, and an
+    // unbounded target lets a caller burn CPU hunting an unreachable root.
+    const target = Math.min(Math.max(Number(targetPc) || 1e-4, 1e-8), 1e-3);
+
+    const sats = await getSatellites();
+    const out = watch.screenFleet(req.workspace.id, sats, screenConjunctions, { hours: 96, thresholdKm: 50 });
+    const enc = (out.assessed || []).find(a =>
+      String(a.primary.id) === String(primaryId) && String(a.secondary.id) === String(secondaryId));
+    if (!enc || !enc.state) return res.status(404).json({ error: "No current encounter between those objects" });
+
+    const leads = [24, 12, 6, 3].filter(h => h < enc.leadHours);
+    const plan = pcmod.planToTargetPc(enc.state, {
+      targetPc: target,
+      massKg: asset.massKg, ispS: asset.ispS, hbrM: enc.hbrM,
+      ageDaysA: enc.primary.ageDays, ageDaysB: enc.secondary.ageDays,
+      kindA: enc.primary.kind, kindB: enc.secondary.kind,
+      leadsHours: leads.length ? leads : [Math.max(0.5, enc.leadHours * 0.5)]
+    });
+    res.json({
+      encounter: { tca: enc.tca, missKm: enc.missKm, pc: enc.pc, pcBand: enc.pcBand,
+                   leadHours: enc.leadHours, ric: enc.ric },
+      spacecraft: asset, plan
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Run the watch on demand rather than waiting for the next sweep.
 api.post("/fleet/watch/run", requireWs, requirePlan("tracker"), async (req, res) => {
   try {
@@ -1281,8 +1451,17 @@ api.get("/export/conjunctions.csv", async (req, res) => {
 
 // JSON 404 for unknown API routes + central error handler (robustness)
 api.use((req, res) => res.status(404).json({ error: "Unknown endpoint", docs: "/docs.html" }));
-app.use("/api", api);
+
+// ORDER IS LOAD-BEARING. The more specific mount must come first.
+//
+// Mounted the other way round, `app.use("/api", api)` matches a request for
+// /api/v1/health, strips the "/api" prefix, and hands the router "/v1/health".
+// No such route exists, so the router's OWN 404 above answers — and because it
+// answers, Express never falls through to the /api/v1 mount below. The effect
+// was that the entire documented versioned namespace returned 404 while the
+// unversioned paths worked, so the API behaved exactly opposite to the docs.
 app.use("/api/v1", api);
+app.use("/api", api);
 
 // ---------- public shareable report page (token is the secret) ----------
 app.get("/r/:token", (req, res) => {
@@ -1397,7 +1576,15 @@ async function intelligenceSweep() {
     const events = intel.augmentConjunctions(d.events, byId).map(ev => ({
       org: null, aOrg: ev.a.org, bOrg: ev.b.org, aName: ev.a.name, bName: ev.b.name,
       aId: ev.a.id, bId: ev.b.id, tca: ev.tca, missKm: ev.missKm, relVelKmS: ev.relVelKmS,
-      altKm: ev.altKm, risk: ev.risk, pc: ev.pc, pcText: ev.pcText
+      altKm: ev.altKm, risk: ev.risk, pc: ev.pc, pcText: ev.pcText,
+      // Which computation produced `pc`. Recorded permanently because the
+      // archive is append-only: rows written before the Foster unification
+      // carry an isotropic value that is biased LOW (median 5.3x), and a
+      // reader must be able to tell those apart from rigorous ones rather
+      // than comparing them as though they were the same quantity.
+      pcMethod: ev.pcMethod || "isotropic-screen",
+      sigmaMajorKm: ev.sigmaMajorKm, sigmaMinorKm: ev.sigmaMinorKm,
+      ageDaysA: ev.ageDaysA, ageDaysB: ev.ageDaysB
     }));
     ledger.append("conjunction", events);
     // 2. maneuvers + anomalies
