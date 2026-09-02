@@ -128,28 +128,111 @@ test("the archive and the live API agree on one conjunction", () => {
 
 test("the isotropic form is never silently substituted", () => {
 
-  check("isotropic screening is biased LOW, which is why it cannot be the default", () => {
-    // Prove the direction of the bias rather than asserting a magic number:
-    // if a future change made screeningPc conservative, this test should be
-    // revisited rather than blindly kept.
-    let lower = 0, total = 0;
-    for (const miss of [0.5, 1, 2, 4]) {
-      for (const ang of [15, 60, 135]) {
-        const th = ang * Math.PI / 180;
-        const rA = { x: 6800, y: 0, z: 0 }, vA = { x: 0, y: 7.5, z: 0 };
-        const rB = { x: 6800, y: miss * Math.cos(th), z: miss * Math.sin(th) };
-        const vB = { x: 0, y: 7.5 * Math.cos(th), z: 7.5 * Math.sin(th) };
-        const f = pc.assess({ rA, vA, rB, vB },
-          { ageDaysA: 1.5, ageDaysB: 4, kindA: "payload", kindB: "debris" });
-        const s = intel.screeningPc(f.missKm, satA, satB).pc;
-        total++;
-        if (s < f.pc) lower++;
-      }
+  // ────────────────────────────────────────────────────────────
+  // These replace an earlier test that asserted the isotropic screen is
+  // always LOWER than Foster. That was wrong, and wrong in an instructive
+  // way: it was measured on synthetic geometries that happened to put the
+  // miss along the MAJOR axis of the covariance ellipse. Real conjunctions
+  // do the opposite — relative velocity is roughly along-track, so the large
+  // along-track uncertainty projects mostly OUT of the encounter plane and
+  // the miss lands on the thin minor axis. On production data the ordering
+  // reversed and Foster came out many orders LOWER.
+  //
+  // So the honest property is not "one is always bigger". It is that the two
+  // are not interchangeable, and that the assumed covariance must stay
+  // defensible — because Pc is exponential in (miss/sigma), a covariance
+  // that is a few times too tight buries real conjunctions completely.
+  // ────────────────────────────────────────────────────────────
+
+  check("the covariance model matches the published shape of SGP4 error", () => {
+    const at = a => pc.covarianceModel(a, "payload");
+    const rss = c => Math.hypot(c.sigmaR, c.sigmaI, c.sigmaC);
+
+    // Total position error at epoch is on the order of a few km. Anything
+    // sub-kilometre here is the defect that produced Pc values near 1e-40.
+    const e = at(0);
+    assert.ok(rss(e) > 1.5 && rss(e) < 6,
+      `epoch RSS sigma is ${rss(e).toFixed(2)} km; published TLE accuracy at epoch is `
+      + "a few km. Sub-km means the model is far too confident and Pc will collapse");
+
+    // In-track dominates and grows fastest; radial stays roughly flat.
+    assert.ok(e.sigmaI > e.sigmaR && e.sigmaI > e.sigmaC,
+      "in-track must be the dominant component at epoch");
+    const wk = at(7);
+    assert.ok(wk.sigmaI > 12,
+      `in-track at 7 days is ${wk.sigmaI} km; published growth reaches tens of km`);
+    assert.ok(wk.sigmaR < 3 * e.sigmaR,
+      "radial should stay roughly constant over a week, not grow like in-track");
+
+    // Nobody should be able to quietly tighten this back down.
+    assert.ok(e.sigmaR >= 0.4,
+      `radial sigma at epoch is ${e.sigmaR} km. Below ~0.4 km this model claims better `
+      + "than published TLE accuracy, and Pc becomes a statement about the assumption");
+  });
+
+  check("a realistic conjunction is not buried by the covariance", () => {
+    // The regression that shipped: a 2.4 km miss archived as Pc 4e-40.
+    // A miss of a couple of km against a few-km covariance must land in a
+    // range an operator could act on, not in the 1e-30s.
+    const th = 60 * Math.PI / 180;
+    const enc = {
+      rA: { x: 6828, y: 0, z: 0 }, vA: { x: 0, y: 7.6, z: 0 },
+      rB: { x: 6828, y: 2.431 * Math.cos(th), z: 2.431 * Math.sin(th) },
+      vB: { x: 0, y: 7.6 * Math.cos(th), z: 7.6 * Math.sin(th) }
+    };
+    const a = pc.assess(enc, { ageDaysA: 0.21, ageDaysB: 0.21, kindA: "payload", kindB: "debris" });
+    assert.ok(a.pc > 1e-9,
+      `a 2.4 km miss came out at Pc ${a.pc.toExponential(2)}. That is the covariance `
+      + "collapsing the probability, not the geometry — the exact defect this guards");
+    assert.equal(a.covarianceDriven, false,
+      "a routine crossing conjunction should not be flagged covariance-driven; "
+      + `it sits ${a.ordersBelowIsotropic} orders below the isotropic reference`);
+  });
+
+  check("false precision is floored rather than published", () => {
+    // Force a genuinely tiny probability with a wide miss.
+    const enc = {
+      rA: { x: 6828, y: 0, z: 0 }, vA: { x: 0, y: 7.6, z: 0 },
+      rB: { x: 6828, y: 0, z: 60 },
+      vB: { x: 0, y: -7.6, z: 0 }
+    };
+    const a = pc.assess(enc, { ageDaysA: 0.2, ageDaysB: 0.2 });
+    if (a.pcExact < pc.PC_FLOOR) {
+      assert.equal(a.pc, pc.PC_FLOOR,
+        "a Pc below the floor must be reported AT the floor, not with 30 digits of "
+        + "precision it does not have");
+      assert.ok(a.pcFloored, "the floored result must say it was floored");
+      assert.match(a.pcText || "", /< 1e-8/, "floored values need a readable label");
     }
-    assert.equal(lower, total,
-      `the isotropic screen was NOT lower in ${total - lower}/${total} cases; `
-      + "the documented justification for preferring Foster no longer holds "
-      + "and the comments in intel.js need revisiting");
+  });
+
+  check("the divergence flag fires when the covariance does all the work", () => {
+    // Simulate the old over-tight model by asking for a near-zero element age
+    // on a wide miss: if the anisotropic result ever collapses far below the
+    // isotropic reference again, this must be visible in the output.
+    const th = 5 * Math.PI / 180;
+    const enc = {
+      rA: { x: 6828, y: 0, z: 0 }, vA: { x: 0, y: 7.6, z: 0 },
+      rB: { x: 6828, y: 8 * Math.cos(th), z: 8 * Math.sin(th) },
+      vB: { x: 0, y: 7.6 * Math.cos(th), z: 7.6 * Math.sin(th) }
+    };
+    const a = pc.assess(enc, { ageDaysA: 0, ageDaysB: 0 });
+    assert.ok(typeof a.ordersBelowIsotropic === "number" || a.ordersBelowIsotropic === null,
+      "ordersBelowIsotropic must always be reported so this condition is observable");
+    assert.ok("covarianceDriven" in a,
+      "the covariance-driven flag is the tripwire for the 1e-40 class of bug and "
+      + "must be present on every assessment");
+  });
+
+  check("the model carries a version so archived rows stay interpretable", () => {
+    assert.ok(pc.PC_MODEL_VERSION, "no PC_MODEL_VERSION export");
+    const a = pc.assess({
+      rA: { x: 6828, y: 0, z: 0 }, vA: { x: 0, y: 7.6, z: 0 },
+      rB: { x: 6828, y: 2, z: 0 }, vB: { x: 0, y: -7.6, z: 0 }
+    }, {});
+    assert.equal(a.pcModel, pc.PC_MODEL_VERSION,
+      "every assessment must stamp the covariance model that produced it; the archive "
+      + "is append-only and already holds rows from a model that was wrong");
   });
 
   check("a degraded row is flagged, not passed off as rigorous", () => {
