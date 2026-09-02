@@ -758,10 +758,11 @@ api.get("/snapshot", async (req, res) => {
     // on aOrg/bOrg directly.
     const recent = ledger.query({ type: "conjunction", since, limit: 400 }).events || [];
     const bands = { CRITICAL: 0, HIGH: 0, MODERATE: 0, LOW: 0 };
-    let tightest = null, rigorous = 0;
+    let tightest = null, rigorous = 0, currentModel = 0, supersededModel = 0;
     for (const e of recent) {
       if (bands[e.risk] !== undefined) bands[e.risk]++;
       if (e.pcMethod === "foster-2d") rigorous++;
+      if (e.pcModel === pcmod.PC_MODEL_VERSION) currentModel++; else supersededModel++;
       if (e.missKm != null && (!tightest || e.missKm < tightest.missKm)) {
         tightest = {
           missKm: e.missKm, tca: e.tca, altKm: e.altKm, risk: e.risk,
@@ -777,7 +778,17 @@ api.get("/snapshot", async (req, res) => {
     // would read as a real measurement of an empty sky.
     let catalogue = { status: "warming" };
     try {
-      const sats = await getSatellites();
+      // Bounded. getSatellites() can take tens of seconds on a cold instance
+      // (upstream fetch, no cache yet), and this endpoint exists precisely so
+      // the landing page does NOT sit waiting on a waking process. Blocking
+      // here would reintroduce the problem it was built to remove — CI caught
+      // exactly that, aborting at 8 s. The catalogue is decorative on this
+      // surface; the archive figures are the point, so report "warming" and
+      // move on rather than hold the whole payload hostage to it.
+      const sats = await Promise.race([
+        getSatellites(),
+        new Promise(resolve => setTimeout(() => resolve(null), 2500))
+      ]);
       if (sats?.length) {
         let leo = 0, meo = 0, geo = 0;
         for (const s of sats) {
@@ -821,11 +832,30 @@ api.get("/snapshot", async (req, res) => {
       conjunctions: {
         windowDays: 7, screened, bands, tightest,
         rigorousPc: rigorous,
+        pcModel: pcmod.PC_MODEL_VERSION,
+        rowsCurrentModel: currentModel,
+        rowsSupersededModel: supersededModel,
         pcNote: rigorous < screened
           ? "Rows marked isotropic-screen predate the Foster unification and are biased LOW; "
             + "they are labelled rather than silently mixed with rigorous values."
-          : "All probabilities in this window are Foster 2D encounter-plane values."
+          : "All probabilities in this window are Foster 2D encounter-plane values.",
+        // Stated plainly on a public surface rather than buried in a commit.
+        modelNote: supersededModel > 0
+          ? "Rows not stamped " + pcmod.PC_MODEL_VERSION + " were computed with covariance "
+            + "model cov-v1, whose radial and cross-track sigma was about 5x tighter than "
+            + "published TLE accuracy. Their probabilities are understated by many orders of "
+            + "magnitude. They are retained unchanged — the archive is append-only — and a "
+            + "dated erratum record sits in the ledger. Do not compare them with current rows."
+          : null
       },
+      errata: (() => {
+        try {
+          const es = ledger.query({ type: "erratum", limit: 50 }).events || [];
+          return es.map(e => ({ t: e.t, correctsModel: e.correctsModel, replacedBy: e.replacedBy,
+                                appliesToRowsUpToSeq: e.appliesToRowsUpToSeq,
+                                direction: e.direction, summary: e.summary }));
+        } catch { return []; }
+      })(),
       service: {
         // Being straight about the hosting is more credible than implying an
         // availability guarantee this tier cannot make.
@@ -1564,12 +1594,64 @@ async function snapshotPopulation() {
     store.saveHistory(sats); // element history for maneuver detection
   } catch (e) { console.error("snapshot failed:", e.message); }
 }
+// ---------- one-time correction record for the cov-v1 rows ----------
+//
+// The archive is append-only and externally witnessed, so a wrong number
+// cannot be edited out — and should not be. It is corrected the way a lab
+// notebook is corrected: by appending a dated erratum that says what was
+// wrong, which rows it affects, and what replaced it.
+//
+// What was wrong: covarianceModel v1 assumed radial/cross-track 1-sigma of
+// 120 m / 150 m at epoch, roughly 5x tighter than published TLE accuracy.
+// Because Pc goes as exp(-d^2 / 2 sigma^2), that understated the probability
+// by tens of orders of magnitude — an archived 2.431 km conjunction was
+// recorded as 4.06e-40 where a defensible sigma gives ~1e-5. Every affected
+// row errs toward "safe", which is the dangerous direction.
+//
+// Idempotent: appends only if no erratum for this model version exists yet,
+// so it is safe on every boot and every sweep.
+function recordCovarianceErratum() {
+  try {
+    const existing = ledger.query({ type: "erratum", limit: 200 }).events || [];
+    if (existing.some(e => e.correctsModel === "cov-v1")) return false;
+    const tip = ledger.verify();
+    ledger.append("erratum", [{
+      org: null,
+      correctsModel: "cov-v1",
+      replacedBy: pcmod.PC_MODEL_VERSION,
+      appliesToRowsUpToSeq: tip.tipSeq ?? null,
+      field: "pc",
+      severity: "high",
+      direction: "understated",
+      summary:
+        "Rows written before this entry used covariance model cov-v1, whose radial and "
+        + "cross-track 1-sigma (120 m / 150 m at epoch) was about 5x tighter than published "
+        + "SGP4/TLE accuracy (a few km at epoch, in-track dominant). Because probability of "
+        + "collision is exponential in miss/sigma, their pc values are understated by many "
+        + "orders of magnitude and must not be compared with rows stamped "
+        + pcmod.PC_MODEL_VERSION + ".",
+      example: "A 2.431 km miss was recorded as pc 4.06e-40; the same geometry under the "
+             + "corrected model is approximately 1e-5.",
+      remedy: "Rows are retained unchanged so the chain stays verifiable. Use the pcModel "
+            + "field to distinguish them; treat any row without pcModel as cov-v1."
+    }]);
+    console.log("ledger: appended cov-v1 erratum");
+    return true;
+  } catch (e) {
+    console.error("erratum append failed:", e.message);
+    return false;
+  }
+}
+
 // Global intelligence sweep — feeds the append-only ledger regardless of
 // whether any customer is watching. This is the compounding data asset.
 async function intelligenceSweep() {
   try {
     const sats = await getSatellites();
     if (!sats.length) return;
+    // Append the cov-v1 erratum before writing any new rows, so the correction
+    // sits ahead of the first row produced by the corrected model.
+    recordCovarianceErratum();
     const byId = new Map(sats.map(s => [s.id, s]));
     // 1. conjunctions (global screening, with Pc)
     const d = await runScreening(null, 3, 10);
@@ -1583,6 +1665,12 @@ async function intelligenceSweep() {
       // reader must be able to tell those apart from rigorous ones rather
       // than comparing them as though they were the same quantity.
       pcMethod: ev.pcMethod || "isotropic-screen",
+      // Which covariance model produced `pc`. Rows without this field are
+      // cov-v1 and are understated — see the erratum record.
+      pcModel: ev.pcModel || null,
+      pcFloored: ev.pcFloored || false,
+      ordersBelowIsotropic: ev.ordersBelowIsotropic ?? null,
+      covarianceDriven: ev.covarianceDriven || false,
       sigmaMajorKm: ev.sigmaMajorKm, sigmaMinorKm: ev.sigmaMinorKm,
       ageDaysA: ev.ageDaysA, ageDaysB: ev.ageDaysB
     }));

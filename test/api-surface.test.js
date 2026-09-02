@@ -119,7 +119,10 @@ test("both the versioned and unversioned API namespaces work", async () => {
     });
 
     // ── the public snapshot ──────────────────────────────────
+    // Timed, because the whole reason this endpoint exists is latency.
+    const snapT0 = Date.now();
     const snap = await get("/api/v1/snapshot");
+    const snapMs = Date.now() - snapT0;
 
     check("the public snapshot returns a usable payload", () => {
       assert.equal(snap.status, 200, `snapshot returned ${snap.status}: ${snap.body.slice(0, 200)}`);
@@ -144,6 +147,16 @@ test("both the versioned and unversioned API namespaces work", async () => {
         "the honesty caveat must travel with the claim, not sit only on the marketing page");
       assert.ok(j.integrity.checkYourself,
         "a verification claim with no way for the reader to check it is worthless");
+    });
+
+    check("the snapshot answers promptly even with a cold catalogue", () => {
+      // This endpoint exists so the landing page does not wait on a waking
+      // instance. It used to `await getSatellites()` unbounded, which on a cold
+      // start can take tens of seconds — CI caught it aborting at 8 s. The
+      // catalogue is decorative here; the archive figures are the point.
+      assert.ok(snapMs < 6000,
+        `/snapshot took ${snapMs} ms on a cold instance. It must not block on the `
+        + "catalogue fetch — report a warming catalogue instead");
     });
 
     const second = await get("/api/v1/snapshot");

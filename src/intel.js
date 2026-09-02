@@ -99,9 +99,17 @@ export function augmentConjunctions(events, satsById, hbrM = 20) {
       return {
         ...ev,
         pc: f.pc,
-        pcText: fmtPcText(f.pc),
+        pcText: f.pcText || fmtPcText(f.pc),
         pcBand: f.pcBand,
         pcMaxIsotropic: f.pcMaxIsotropic,
+        // Stamp the covariance model. The archive is append-only and already
+        // holds rows written under cov-v1, whose radial/cross-track sigma was
+        // ~5x too tight and drove Pc down by tens of orders of magnitude. A
+        // reader must be able to tell those apart from these.
+        pcModel: f.pcModel,
+        pcFloored: f.pcFloored || false,
+        ordersBelowIsotropic: f.ordersBelowIsotropic,
+        covarianceDriven: f.covarianceDriven || false,
         combinedSigmaKm: +Math.hypot(f.encounterPlane.sigmaXKm, f.encounterPlane.sigmaYKm).toFixed(2),
         sigmaMajorKm: f.encounterPlane.sigmaXKm,
         sigmaMinorKm: f.encounterPlane.sigmaYKm,
@@ -124,8 +132,19 @@ export function augmentConjunctions(events, satsById, hbrM = 20) {
   });
 }
 
+/**
+ * Human-readable Pc.
+ *
+ * This used to be "1e" + Math.ceil(log10(pc)), which rounds the exponent UP:
+ * a probability of 1.03e-5 was displayed as "1e-4", overstating it by an order
+ * of magnitude. On a risk figure that is not a rounding choice, it is a wrong
+ * number. Two significant figures in plain exponential form says exactly what
+ * was computed.
+ */
 function fmtPcText(p) {
-  return p > 0 ? "1e" + Math.ceil(Math.log10(Math.min(1, p))) : "0";
+  if (!(p > 0)) return "0";
+  if (p < 1e-8) return "< 1e-8";
+  return Number(p).toExponential(1);
 }
 
 // ---------- TLE staleness / data quality ----------
