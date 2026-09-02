@@ -71,19 +71,67 @@ export function ricComponents(rA, vA, rB) {
  * @param kind      "payload" | "debris" | "rocket body" | unknown
  * @returns {sigmaR, sigmaI, sigmaC} in km, 1-sigma
  */
+export const PC_MODEL_VERSION = "cov-v2-2026-09";
+
+/**
+ * Modelled 1-sigma position uncertainty for a TLE-derived state, in RIC.
+ *
+ * ── Why v2 exists: v1 was far too confident ─────────────────
+ * v1 assumed sigmaR 120 m and sigmaC 150 m at epoch. That is roughly 5x
+ * tighter than any published assessment of TLE accuracy, and because Pc goes
+ * as exp(-d^2 / 2 sigma^2) the error is not proportional — it is exponential.
+ * A real archived conjunction (2.431 km miss) came out at Pc 4.06e-40 under
+ * v1. The same geometry with a defensible sigma is ~1e-5. Thirty-five orders
+ * of magnitude, all in the direction of saying "safe".
+ *
+ * ── What v2 is based on ─────────────────────────────────────
+ * Published SGP4/TLE error characterisations agree on the shape:
+ *   - total position error at epoch is on the order of a few km (~3 km),
+ *   - the along-track (I) component dominates and grows fastest, reaching
+ *     tens of km within a few days,
+ *   - the radial (R) component stays roughly constant over a week,
+ *   - the cross-track (C) component grows only slightly.
+ * So v2 pins epoch values that sum to ~2.8 km RSS, keeps R nearly flat, lets
+ * C drift, and gives I the steep growth (2.5 + 3.0/day, so ~23 km at 7 days).
+ *
+ * ── Direction of error is deliberate ────────────────────────
+ * Where the literature gives a range, v2 takes the pessimistic end. An
+ * over-wide covariance produces a Pc that is too HIGH, which costs an
+ * operator an unnecessary look. An over-tight one produces a Pc that is too
+ * LOW, which costs them the conjunction. Those are not symmetric.
+ *
+ * Still an assumption, not a measurement: a TLE carries no covariance, and
+ * this must never be presented as an operator-supplied one.
+ */
 export function covarianceModel(ageDays = 1, kind = "payload") {
   const age = Math.max(0, Math.min(ageDays, 30));
+  // Debris and spent stages are tracked less often and tumble, so their
+  // element sets degrade faster than an actively maintained payload's.
   const k = /deb/i.test(kind) ? 2.2 : /r\/b|rocket/i.test(kind) ? 1.5 : 1.0;
   return {
-    sigmaR: +(k * (0.12 + 0.055 * age)).toFixed(4),
-    sigmaI: +(k * (0.55 + 1.25 * age)).toFixed(4),
-    sigmaC: +(k * (0.15 + 0.085 * age)).toFixed(4),
+    sigmaR: +(k * (0.70 + 0.02 * age)).toFixed(4),   // near-flat with age
+    sigmaI: +(k * (2.50 + 3.00 * age)).toFixed(4),   // dominant, steep
+    sigmaC: +(k * (0.90 + 0.08 * age)).toFixed(4),   // slight growth
     ageDays: +age.toFixed(2),
     kind,
     assumed: true,
-    note: "TLEs carry no covariance. This is a modelled 1-sigma from SGP4 error growth, not an operator-supplied covariance."
+    model: PC_MODEL_VERSION,
+    note: "TLEs carry no covariance. Modelled 1-sigma from published SGP4 error growth "
+        + "(~3 km at epoch, in-track dominant), taken at the pessimistic end. NOT an "
+        + "operator-supplied covariance."
   };
 }
+
+/**
+ * Below this, a Pc computed from a MODELLED covariance carries no information.
+ *
+ * Pc is exponential in (miss/sigma). With sigma assumed rather than measured,
+ * the difference between 1e-12 and 1e-40 is not a statement about the sky, it
+ * is a statement about the assumption — a 20% change in sigma moves it by many
+ * orders. Reporting those digits would be false precision, so anything below
+ * the floor is published as "< 1e-8" and flagged.
+ */
+export const PC_FLOOR = 1e-8;
 
 // ============================================================
 // Foster 2D probability of collision
@@ -224,19 +272,46 @@ export function assess(enc, opts = {}) {
   const f = fosterPc(miss, rel, covA, covB, basis, hbrM);
   const bound = maxPc(missKm, hbrM);
 
+  // ── Guard against false precision ────────────────────────────
+  // Pc is exponential in (miss/sigma) and sigma here is MODELLED. Below the
+  // floor the digits describe the assumption, not the sky, so report the
+  // floor and say so rather than publishing something like 4e-40.
+  const belowFloor = f.pc > 0 && f.pc < PC_FLOOR;
+
+  // ── Divergence from the isotropic reference ──────────────────
+  // maxPc circularises the covariance. When the anisotropic result sits many
+  // orders below it, the gap is not physics — it is the thin axis of the
+  // assumed ellipse doing all the work. That is exactly the condition under
+  // which an over-tight covariance silently buries a real conjunction, so it
+  // is surfaced rather than left for someone to notice.
+  const ratio = (bound > 0 && f.pc > 0) ? f.pc / bound : null;
+  const ordersBelowBound = ratio ? -Math.log10(ratio) : null;
+  const covarianceDriven = ordersBelowBound !== null && ordersBelowBound > 3;
+
   return {
     missKm: +missKm.toFixed(4),
     relVelKmS: +norm(rel).toFixed(4),
     ric: ricComponents(rA, vA, rB),
-    pc: f.pc,
-    pcBand: pcBand(f.pc),
+    pc: belowFloor ? PC_FLOOR : f.pc,
+    pcExact: f.pc,
+    pcFloored: belowFloor,
+    pcText: belowFloor ? "< 1e-8" : null,
+    pcBand: pcBand(belowFloor ? PC_FLOOR : f.pc),
     pcMaxIsotropic: bound,
     pcMaxIsotropicBand: pcBand(bound),
+    ordersBelowIsotropic: ordersBelowBound === null ? null : +ordersBelowBound.toFixed(1),
+    covarianceDriven,
+    covarianceDrivenNote: covarianceDriven
+      ? "This probability sits more than three orders below the isotropic reference, so it is "
+      + "dominated by the assumed thin axis of the covariance rather than by the geometry. "
+      + "Treat it as a screening indication only."
+      : null,
     encounterPlane: {
       sigmaXKm: f.sigmaXKm, sigmaYKm: f.sigmaYKm, missInPlaneKm: f.missInPlaneKm
     },
     covariance: { primary: covA, secondary: covB },
     hbrM,
+    pcModel: PC_MODEL_VERSION,
     method: "Foster 2D encounter-plane integration; covariance modelled from element-set age",
     caveat: "Screening product. Not a substitute for an operator CDM with a supplied covariance."
   };
