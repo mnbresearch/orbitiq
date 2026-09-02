@@ -778,7 +778,17 @@ api.get("/snapshot", async (req, res) => {
     // would read as a real measurement of an empty sky.
     let catalogue = { status: "warming" };
     try {
-      const sats = await getSatellites();
+      // Bounded. getSatellites() can take tens of seconds on a cold instance
+      // (upstream fetch, no cache yet), and this endpoint exists precisely so
+      // the landing page does NOT sit waiting on a waking process. Blocking
+      // here would reintroduce the problem it was built to remove — CI caught
+      // exactly that, aborting at 8 s. The catalogue is decorative on this
+      // surface; the archive figures are the point, so report "warming" and
+      // move on rather than hold the whole payload hostage to it.
+      const sats = await Promise.race([
+        getSatellites(),
+        new Promise(resolve => setTimeout(() => resolve(null), 2500))
+      ]);
       if (sats?.length) {
         let leo = 0, meo = 0, geo = 0;
         for (const s of sats) {
