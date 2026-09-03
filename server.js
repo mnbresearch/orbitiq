@@ -25,6 +25,7 @@ import * as watch from "./src/watch.js";
 import * as pcmod from "./src/pc.js";
 import * as trend from "./src/trend.js";
 import { getSpaceWeather, environmentForLedger } from "./src/spaceweather.js";
+import { mountEvidenceRoutes } from "./src/evidenceroutes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -1351,6 +1352,12 @@ api.post("/fleet/manoeuvre/to-pc", requireWs, requirePlan("operator"), async (re
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// The evidence layer — decisions, compliance, manoeuvre screening, proof and
+// audit. Mounted from its own module: this file is already large enough that
+// nobody reads it end to end before changing it, which is exactly how the
+// /api/v1 mount-ordering bug survived here unnoticed.
+mountEvidenceRoutes(api, { requireWs, requirePlan, fleet, ledger, getSatellites });
 
 // Run the watch on demand rather than waiting for the next sweep.
 api.post("/fleet/watch/run", requireWs, requirePlan("tracker"), async (req, res) => {

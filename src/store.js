@@ -153,8 +153,33 @@ export const PLAN_CATALOG = [
     ]
   },
   {
-    id: "enterprise", name: "Enterprise", price: "Bespoke", cadence: "",
-    pitch: "For agencies, insurers and defence programmes with bespoke requirements.",
+    // ── The other side of the market ──────────────────────────
+    // Every tier above sells to the operator: someone who flies spacecraft and
+    // needs to screen them. This one sells to the party that has to BELIEVE the
+    // operator — an underwriter at renewal, a regulator at licence review, a
+    // prime assessing a supplier.
+    //
+    // Commercially it is the most interesting tier for three reasons. It has
+    // near-zero marginal cost, because a verifier reads the same archive that
+    // already exists rather than generating new screening load. It has real
+    // budget attached, because loss adjustment and risk selection are expensive
+    // problems. And it is distribution: an underwriter who asks for a Proof of
+    // Diligence at renewal has just told every operator in their book to
+    // produce one. Demand from this side pulls supply from the other.
+    id: "verifier", name: "Underwriter", price: "Bespoke", cadence: "per portfolio",
+    pitch: "For insurers, brokers and regulators who need to verify what an operator was told "
+         + "and what they did about it — across a whole book, not one spacecraft at a time.",
+    features: [
+      "Verify any Proof of Diligence against the public archive, independently",
+      "Portfolio view across every operator who grants you access",
+      "Response-time and decision-pattern comparison at renewal",
+      "Historical position: what was knowable on the day of an incident",
+      "Read-only by construction — a verifier can never alter an operator's record"
+    ]
+  },
+  {
+    id: "enterprise", name: "Institutional", price: "Bespoke", cadence: "",
+    pitch: "For agencies, defence programmes and primes with bespoke requirements.",
     features: [
       "Everything in Constellation",
       "Dedicated instance and custom data retention",
