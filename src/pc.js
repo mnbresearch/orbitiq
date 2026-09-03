@@ -20,26 +20,13 @@
 const MU = 398600.4418;      // km^3/s^2
 import { EARTH_R_KM as EARTH_R } from "./constants.js";
 
-// ---------- vector helpers ----------
-const sub = (a, b) => ({ x: a.x-b.x, y: a.y-b.y, z: a.z-b.z });
-const dot = (a, b) => a.x*b.x + a.y*b.y + a.z*b.z;
-const cross = (a, b) => ({
-  x: a.y*b.z - a.z*b.y, y: a.z*b.x - a.x*b.z, z: a.x*b.y - a.y*b.x
-});
-const norm = a => Math.sqrt(dot(a, a));
-const unit = a => { const n = norm(a); return n > 0 ? { x:a.x/n, y:a.y/n, z:a.z/n } : { x:0,y:0,z:0 }; };
-
-/**
- * RIC (radial / in-track / cross-track) basis of the primary object.
- * R̂ along the position vector, Ĉ along orbital angular momentum,
- * Î completes the right-handed set (≈ velocity direction).
- */
-export function ricBasis(r, v) {
-  const R = unit(r);
-  const C = unit(cross(r, v));
-  const I = cross(C, R);          // already unit: C ⟂ R
-  return { R, I, C };
-}
+// Vector helpers and the RIC basis live in orbitstate.js, so that covcal.js
+// can measure residuals in the same frame this file turns into probabilities
+// without an import cycle. Re-exported because callers have always imported
+// ricBasis from here.
+import { sub, dot, cross, norm, unit, ricBasis } from "./orbitstate.js";
+import { applyFloor, measuredSigma } from "./covcal.js";
+export { ricBasis };
 
 /** Miss vector expressed in the primary's RIC frame. Kilometres. */
 export function ricComponents(rA, vA, rB) {
@@ -103,12 +90,12 @@ export const PC_MODEL_VERSION = "cov-v2-2026-09";
  * Still an assumption, not a measurement: a TLE carries no covariance, and
  * this must never be presented as an operator-supplied one.
  */
-export function covarianceModel(ageDays = 1, kind = "payload") {
+export function covarianceModel(ageDays = 1, kind = "payload", calibration = null) {
   const age = Math.max(0, Math.min(ageDays, 30));
   // Debris and spent stages are tracked less often and tumble, so their
   // element sets degrade faster than an actively maintained payload's.
   const k = /deb/i.test(kind) ? 2.2 : /r\/b|rocket/i.test(kind) ? 1.5 : 1.0;
-  return {
+  const modelled = {
     sigmaR: +(k * (0.70 + 0.02 * age)).toFixed(4),   // near-flat with age
     sigmaI: +(k * (2.50 + 3.00 * age)).toFixed(4),   // dominant, steep
     sigmaC: +(k * (0.90 + 0.08 * age)).toFixed(4),   // slight growth
@@ -120,6 +107,22 @@ export function covarianceModel(ageDays = 1, kind = "payload") {
         + "(~3 km at epoch, in-track dominant), taken at the pessimistic end. NOT an "
         + "operator-supplied covariance."
   };
+  if (!calibration) return applyFloor(modelled, null);
+
+  // ── Applying the measurement ────────────────────────────
+  // A calibration measured from real element sets can raise these numbers and
+  // cannot lower them. The comparison itself is applyFloor() in covcal.js —
+  // deliberately one implementation, not one here and one there, because two
+  // copies of a covariance rule is how the archive and the live API ended up
+  // publishing different probabilities for the same conjunction.
+  const kindFit = calibration.byKind?.[kind]?.fit
+    // An unclassified object falls back to the WIDEST available profile
+    // rather than the narrowest — the same direction of caution the model
+    // itself takes.
+    || calibration.byKind?.debris?.fit
+    || calibration.byKind?.payload?.fit;
+
+  return applyFloor(modelled, kindFit ? measuredSigma(kindFit, age) : null);
 }
 
 /**
@@ -266,8 +269,13 @@ export function assess(enc, opts = {}) {
   const rel = sub(vB, vA);
   const missKm = norm(miss);
 
-  const covA = covarianceModel(opts.ageDaysA ?? 1, opts.kindA ?? "payload");
-  const covB = covarianceModel(opts.ageDaysB ?? 1, opts.kindB ?? "debris");
+  // The calibration is passed in rather than imported, so that this stays a
+  // pure function: the same encounter and the same calibration always give the
+  // same Pc, which is what makes an archived probability reproducible years
+  // later from the row alone.
+  const cal = opts.calibration ?? null;
+  const covA = covarianceModel(opts.ageDaysA ?? 1, opts.kindA ?? "payload", cal);
+  const covB = covarianceModel(opts.ageDaysB ?? 1, opts.kindB ?? "debris", cal);
 
   const f = fosterPc(miss, rel, covA, covB, basis, hbrM);
   const bound = maxPc(missKm, hbrM);
@@ -312,6 +320,11 @@ export function assess(enc, opts = {}) {
     covariance: { primary: covA, secondary: covB },
     hbrM,
     pcModel: PC_MODEL_VERSION,
+    // Which covariance actually produced this number. An archived row has to
+    // carry it: two rows written a month apart can use different sigmas, and
+    // without this a reader comparing them would be comparing two things.
+    pcCalibration: covA.calibration || "none",
+    pcFloorApplied: !!(covA.floorApplied || covB.floorApplied),
     method: "Foster 2D encounter-plane integration; covariance modelled from element-set age",
     caveat: "Screening product. Not a substitute for an operator CDM with a supplied covariance."
   };
