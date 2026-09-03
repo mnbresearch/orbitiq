@@ -46,6 +46,11 @@
   <div class="kp-chip" id="kp-chip" title="Geomagnetic activity — planetary K index"><span class="kp-dot"></span><span>Kp <b id="kp-val">—</b></span></div>
   <button id="plans-btn" style="width:auto;padding:6px 11px" title="Subscription plans">Plans</button>
   <button id="palette-btn" style="width:auto;padding:6px 11px" title="Command palette (Ctrl+K)">⌘K</button>
+  <!-- Evidence sits in the main nav, not under a menu. The decision log only
+       has value if it gets filled in, and a page nobody can find is a page
+       nobody uses — which would leave the archive full of warnings and empty
+       of responses, i.e. back to being a feed. -->
+  <a href="/evidence.html" style="text-decoration:none"><button style="width:auto;padding:6px 11px" title="Warnings, recorded decisions and Proof of Diligence">Evidence</button></a>
   <a href="/docs.html" target="_blank" style="text-decoration:none"><button style="width:auto;padding:6px 11px" title="API documentation">API</button></a>
   <a href="/status.html" target="_blank" style="text-decoration:none"><button style="width:auto;padding:6px 11px" title="System status & data provenance">Status</button></a>
   <select id="speed" style="width:118px">

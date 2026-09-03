@@ -17,8 +17,16 @@ import * as compliance from "./compliance.js";
 import * as burnscreen from "./burnscreen.js";
 import * as proof from "./proof.js";
 import * as audit from "./audit.js";
+import { mountVerifierRoutes } from "./verifierroutes.js";
 
 export function mountEvidenceRoutes(api, { requireWs, requirePlan, fleet, ledger, getSatellites }) {
+
+  // The verifier side — grants an operator issues, and the read-only API an
+  // underwriter or regulator uses to check a document against the archive.
+  // Mounted here so the whole evidence surface lives behind one call, but kept
+  // in its own module because the property being sold is that no write handler
+  // exists on that path.
+  mountVerifierRoutes(api, { requireWs, requirePlan, ledger, decisions, compliance });
   // Evidence layer: decisions, compliance, manoeuvre screening, proof
   //
   // This is the part of the product that is not a feed. The archive records what
