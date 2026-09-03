@@ -1691,6 +1691,9 @@ async function intelligenceSweep() {
       pcFloored: ev.pcFloored || false,
       ordersBelowIsotropic: ev.ordersBelowIsotropic ?? null,
       covarianceDriven: ev.covarianceDriven || false,
+      dilutionRegime: ev.dilutionRegime || null,
+      pcAtPeak: ev.pcAtPeak ?? null,
+      pcSuppressionFactor: ev.pcSuppressionFactor ?? null,
       sigmaMajorKm: ev.sigmaMajorKm, sigmaMinorKm: ev.sigmaMinorKm,
       ageDaysA: ev.ageDaysA, ageDaysB: ev.ageDaysB
     }));
