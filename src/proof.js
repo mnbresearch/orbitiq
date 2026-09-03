@@ -240,6 +240,11 @@ ${covHtml}
        hash <code class="mono">${esc(d.chain.tipHash)}</code>.
        Report digest <code class="mono">${esc(d.reportDigest)}</code>.</div>
   <ol>
+    <li><b>If the operator gave you a grant token</b>, open
+        <code>https://orbit.mnbresearch.com/verify.html</code>, paste the token, and enter the digest above.
+        It recomputes the digest from the operator&rsquo;s own archived rows and tells you whether this
+        document describes them. Nothing on that page can alter what the operator recorded, and no account
+        is created for you.</li>
     <li>Fetch <code>https://orbit.mnbresearch.com/api/v1/archive/verify</code>. It is public and needs no account.
         It walks the whole chain and names the first row that does not reconcile.</li>
     <li>Compare the tip hash above against the external witness log at

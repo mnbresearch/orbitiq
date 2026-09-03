@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Verify a Proof of Diligence — OrbitIQ</title>
+<meta name="robots" content="noindex">
+<!--
+  ============================================================
+  The verifier console.
+
+  ── Who this is for ─────────────────────────────────────────
+  Not the operator. This page is for the person the operator hands a Proof of
+  Diligence to: an underwriter at renewal, a regulator after an incident, a
+  prime contractor auditing a subcontractor. They have a grant token and a
+  document, no account here, and no reason to trust us.
+
+  Shipping the verifier tier as an API alone would have repeated the mistake
+  the evidence console fixed for operators. The buyer of this tier is an
+  insurance analyst, not an engineer; if checking a document requires curl,
+  nobody checks a document, and an unexercised guarantee is worth nothing at
+  the moment it is finally tested.
+
+  ── The rule this page follows ──────────────────────────────
+  It never states a conclusion the server did not state. Every verdict box
+  renders the API's own `means` and `limits` strings verbatim rather than
+  paraphrasing them into something more confident. The whole product is a
+  claim about evidentiary care; a UI that rounded "the hashes agree" up to
+  "verified" would be the one place that claim broke.
+
+  ── Why the token lives in sessionStorage ───────────────────
+  It is a bearer credential to somebody ELSE'S record. Underwriters work on
+  shared and managed machines, and a grant that outlives the tab it was pasted
+  into is a grant sitting in a browser profile long after the review ended.
+  Closing the tab should end the access; re-pasting costs seconds.
+  ============================================================
+-->
+<style>
+  :root{
+    --bg:#070c14; --panel:#0e1622; --line:rgba(120,160,220,.16);
+    --ink:#e8f0fa; --dim:#8ba3c2; --accent:#3ec9ff;
+    --ok:#66e29a; --warn:#fbbf24; --bad:#fca5a5;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+  a{color:var(--accent)}
+  .top{position:sticky;top:0;z-index:20;background:rgba(7,12,20,.92);backdrop-filter:blur(8px);
+       border-bottom:1px solid var(--line);padding:14px 24px;display:flex;align-items:center;gap:14px}
+  .brand{font-weight:700;letter-spacing:-.01em}
+  .brand span{color:var(--accent)}
+  .top .role{font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:2px 10px}
+  .top .who{margin-left:auto;font-size:12.5px;color:var(--dim);text-align:right}
+  .wrap{max-width:1080px;margin:0 auto;padding:26px 24px 90px}
+  h1{font-size:23px;margin:0 0 5px;letter-spacing:-.01em}
+  .lede{color:var(--dim);margin:0 0 22px;max-width:740px}
+  h2{font-size:15px;margin:30px 0 10px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+  .kv .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+  .kv .v{font-size:15px;font-weight:600;margin-top:2px;word-break:break-word}
+  label{display:block;font-size:12px;color:var(--dim);margin-bottom:5px}
+  input,select,textarea{font:inherit;background:#0b1421;color:var(--ink);border:1px solid var(--line);
+                        border-radius:8px;padding:9px 11px;width:100%}
+  input.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+  button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);
+         background:#16233a;color:var(--ink);padding:9px 15px;font-size:13px}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:#04121f;font-weight:650;border-color:transparent}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+  .row > div{flex:1;min-width:170px}
+  .row > button{flex:0 0 auto}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);
+     font-weight:600;padding:9px 8px;border-bottom:1px solid var(--line)}
+  td{padding:9px 8px;border-bottom:1px solid rgba(120,160,220,.08);vertical-align:top}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#7fd7ff}
+  .dim{color:var(--dim)}
+  .chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11.5px;font-weight:600;white-space:nowrap}
+  .c-ok{background:rgba(34,197,94,.13);color:var(--ok)}
+  .c-bad{background:rgba(239,68,68,.14);color:var(--bad)}
+  .c-soft{background:rgba(148,163,184,.14);color:#a8bdd6}
+  .c-warn{background:rgba(251,191,36,.14);color:var(--warn)}
+  .verdict{border-radius:11px;padding:15px 17px;margin:14px 0;border:1px solid}
+  .verdict.match{background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.34)}
+  .verdict.nomatch{background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.34)}
+  .verdict.neutral{background:rgba(62,201,255,.06);border-color:rgba(62,201,255,.26)}
+  .verdict h3{margin:0 0 7px;font-size:16px}
+  .verdict p{margin:7px 0 0;font-size:13px;line-height:1.6}
+  .msg{padding:11px 14px;border-radius:9px;margin:12px 0;font-size:13px}
+  .msg.err{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#fecaca}
+  .msg.info{background:rgba(62,201,255,.08);border:1px solid rgba(62,201,255,.25);color:#bae6fd}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:22px 0 4px}
+  .tabs button{border-radius:99px;padding:6px 14px;font-size:12.5px;background:transparent}
+  .tabs button[aria-selected="true"]{background:#16233a;border-color:var(--accent);color:var(--ink)}
+  .tabs button:disabled{opacity:.35}
+  .empty{text-align:center;color:var(--dim);padding:30px}
+  .hint{font-size:11.5px;color:var(--dim);margin-top:6px;line-height:1.55}
+  .gate{max-width:560px;margin:60px auto}
+  footer{margin-top:44px;padding-top:18px;border-top:1px solid var(--line);color:var(--dim);font-size:12px;line-height:1.7}
+</style></head><body>
+
+<header class="top">
+  <div class="brand">Orbit<span>IQ</span></div>
+  <div class="role">Verifier</div>
+  <div class="who" id="who"></div>
+</header>
+
+<div class="wrap">
+
+<!-- ── Gate ───────────────────────────────────────────────── -->
+<section id="gate" class="gate">
+  <h1>Verify a Proof of Diligence</h1>
+  <p class="lede">You were given a document and a grant token by a satellite operator. Paste the token to
+     check the document against the operator&rsquo;s archive yourself.</p>
+  <div class="panel">
+    <label for="tok">Grant token</label>
+    <input id="tok" class="mono" type="password" autocomplete="off" spellcheck="false"
+           placeholder="the token the operator sent you">
+    <div class="hint">Held for this browser tab only and never written to disk. This is a credential to
+      another organisation&rsquo;s record, so closing the tab ends the access.</div>
+    <div style="margin-top:13px"><button id="go" class="primary">Open the record</button></div>
+    <div id="gate-msg"></div>
+  </div>
+  <p class="dim" style="font-size:12.5px">No account is needed and none is created. The grant is read-only:
+     there is no endpoint on this path that can alter what the operator recorded.</p>
+</section>
+
+<!-- ── Console ────────────────────────────────────────────── -->
+<section id="console" hidden>
+  <h1>Verify a Proof of Diligence</h1>
+  <p class="lede" id="sub"></p>
+
+  <div class="panel">
+    <div class="grid kv" id="grantinfo"></div>
+  </div>
+
+  <h2>Check a document</h2>
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label for="digest">Report digest (printed at the foot of the document)</label>
+        <input id="digest" class="mono" placeholder="e.g. 3f9c1a2b…" spellcheck="false">
+      </div>
+      <div style="max-width:150px">
+        <label for="thr">Threshold P<sub>c</sub></label>
+        <input id="thr" placeholder="1e-4" spellcheck="false">
+      </div>
+      <button id="check" class="primary">Check</button>
+    </div>
+    <div class="hint">The window and threshold are printed on the document. A report over a different period
+      is legitimately a different digest, so match those first before drawing any conclusion.</div>
+    <div id="verdict"></div>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button data-t="conjunctions" data-scope="conjunctions" aria-selected="true">Warnings</button>
+    <button data-t="decisions" data-scope="decisions">Decisions</button>
+    <button data-t="summary" data-scope="decisions">Response summary</button>
+    <button data-t="knowable" data-scope="conjunctions">Knowable on a date</button>
+    <button data-t="compliance" data-scope="compliance">Framework coverage</button>
+    <button data-t="portfolio" data-scope="">Your portfolio</button>
+  </div>
+  <div id="pane"></div>
+
+  <footer>
+    <b>What a match establishes.</b> That the rows the document describes are the rows the archive holds, and
+    that the hash chain over them reconciles &mdash; so they have not been altered since they were written.<br>
+    <b>What it does not establish.</b> That any decision was correct, that the screening was complete, or that
+    nothing happened where no row appears: an action taken outside this system leaves no trace in it.
+    Probabilities come from public element sets, which carry no covariance; the covariance is modelled and
+    every row states which model produced it.<br>
+    <b>Scope of the guarantee.</b> Tamper-evident, not tamper-proof, with GitHub acting as the notary via
+    hourly witness runs. It shows a hash was publicly observable at a time. It is not a signature and does not
+    attest authorship.
+  </footer>
+</section>
+
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const TOKEN = {
+  get: () => sessionStorage.getItem("orbitiq-grant"),
+  set: v => sessionStorage.setItem("orbitiq-grant", v),
+  clear: () => sessionStorage.removeItem("orbitiq-grant")
+};
+
+const fmtPc = p => {
+  if (p == null || !isFinite(Number(p))) return "—";
+  const n = Number(p);
+  return n <= 0 ? "0" : n < 1e-8 ? "< 1e-8" : n.toExponential(1);
+};
+const fmtT = t => t ? String(t).replace("T", " ").replace(/\..*$/, "") : "—";
+const fmtD = t => t ? String(t).slice(0, 10) : "—";
+
+// Every call carries the token in a header. There is deliberately no code path
+// here that puts it in a URL: the server refuses ?token= anyway, and a UI that
+// tried would only teach verifiers to paste credentials into address bars.
+async function api(path) {
+  const t = TOKEN.get();
+  const r = await fetch("/api/v1" + path, {
+    cache: "no-store",
+    headers: t ? { "X-Grant-Token": t } : {}
+  });
+  const text = await r.text();
+  let body; try { body = JSON.parse(text); } catch { body = { error: text.slice(0, 200) }; }
+  return { status: r.status, body };
+}
+
+let GRANT = null;
+
+// ── Sign-in ───────────────────────────────────────────────
+$("go").addEventListener("click", open);
+$("tok").addEventListener("keydown", e => { if (e.key === "Enter") open(); });
+
+async function open() {
+  const v = $("tok").value.trim();
+  if (!v) return;
+  TOKEN.set(v);
+  const r = await api("/verify/grant");
+  if (r.status !== 200) {
+    TOKEN.clear();
+    // The server explains what to do about each failure — expired and revoked
+    // need a new grant, a bad token needs checking. Show its wording, because
+    // a generic "invalid" turns a five-second fix into a phone call.
+    $("gate-msg").innerHTML = '<div class="msg err">' + esc(r.body.error || "Could not open that grant.")
+      + (r.body.remedy ? '<div class="hint" style="color:inherit;opacity:.85">' + esc(r.body.remedy) + "</div>" : "")
+      + "</div>";
+    return;
+  }
+  GRANT = r.body;
+  $("tok").value = "";
+  $("gate").hidden = true;
+  $("console").hidden = false;
+  renderGrant();
+  selectTab("conjunctions");
+}
+
+function renderGrant() {
+  const g = GRANT;
+  $("who").innerHTML = esc(g.verifierName) + '<br><a href="#" id="signout">end session</a>';
+  $("signout").addEventListener("click", e => { e.preventDefault(); TOKEN.clear(); location.reload(); });
+  $("sub").textContent = g.accessNote;
+  $("grantinfo").innerHTML = [
+    ["Granted to", esc(g.verifierName)],
+    ["Scopes", g.scopes.map(s => '<span class="chip c-soft">' + esc(s) + "</span>").join(" ")],
+    ["Record window", esc(fmtD(g.window.from) + " → " + fmtD(g.window.to))],
+    ["Access expires", esc(fmtD(g.expiresAt))],
+    ["Access level", '<span class="chip c-ok">' + esc(g.access) + "</span>"]
+  ].map(([k, v]) => '<div><div class="k">' + k + '</div><div class="v">' + v + "</div></div>").join("");
+
+  for (const b of $("tabs").querySelectorAll("button")) {
+    const need = b.dataset.scope;
+    if (need && !g.scopes.includes(need)) {
+      b.disabled = true;
+      b.title = 'This grant does not include the "' + need + '" scope. The operator chose the scopes when '
+              + "issuing it; ask them to reissue if you need this.";
+    }
+  }
+}
+
+// ── Digest check ──────────────────────────────────────────
+$("check").addEventListener("click", async () => {
+  const d = $("digest").value.trim();
+  const thr = $("thr").value.trim();
+  const btn = $("check");
+  btn.disabled = true;
+  const q = new URLSearchParams();
+  if (d) q.set("digest", d);
+  if (thr) q.set("thresholdPc", thr);
+  const r = await api("/verify/report" + (q.toString() ? "?" + q : ""));
+  btn.disabled = false;
+
+  if (r.status !== 200) {
+    $("verdict").innerHTML = '<div class="msg err">' + esc(r.body.error || "Could not run the check.") + "</div>";
+    return;
+  }
+  const v = r.body;
+  const cls = v.matches === true ? "match" : v.matches === false ? "nomatch" : "neutral";
+  const head = v.matches === true ? "The document matches the archive"
+             : v.matches === false ? "This document does not match the archive"
+             : "Recomputed from the archive";
+  $("verdict").innerHTML =
+    '<div class="verdict ' + cls + '">'
+    + "<h3>" + head + "</h3>"
+    + '<div class="dim mono" style="font-size:12px">archive digest ' + esc(v.recomputedDigest)
+    + (v.claimedDigest ? " · document digest " + esc(v.claimedDigest) : "") + "</div>"
+    + '<div class="dim" style="font-size:12px;margin-top:4px">'
+    + esc(v.rowsConsidered) + " row(s) over " + esc(fmtD(v.window.from)) + " → " + esc(fmtD(v.window.to))
+    + (v.thresholdPc != null ? " at threshold " + esc(v.thresholdPc) : " at no threshold filter")
+    + " · chain " + (v.chain.ok ? "reconciles" : "DOES NOT reconcile")
+    + " to #" + esc(v.chain.tipSeq) + "</div>"
+    + "<p>" + esc(v.means) + "</p>"
+    + '<p class="dim">' + esc(v.limits) + "</p>"
+    + "</div>"
+    // Where the window and threshold came from. Shown as its own block because
+    // "the archive told me the parameters" and "I typed the parameters in" are
+    // very different evidentiary positions, and only the first is a fact about
+    // the operator's record rather than about the reader.
+    + (v.issuance ? '<div class="verdict ' + (v.issuance.found ? "neutral" : "nomatch") + '">'
+        + "<h3>" + (v.issuance.found ? "The archive records producing this digest"
+                                     : "This digest is not recorded as produced here") + "</h3>"
+        + (v.issuance.found
+            ? '<div class="dim" style="font-size:12px">generated ' + esc(fmtT(v.issuance.generatedAt))
+              + (v.issuance.generatedBy ? " by " + esc(v.issuance.generatedBy) : "")
+              + " · archive row #" + esc(v.issuance.ledgerSeq)
+              + ' <span class="mono">' + esc(String(v.issuance.ledgerHash || "").slice(0, 12)) + "</span>"
+              + " · " + esc(v.issuance.rowCount) + " row(s)</div>"
+            : "")
+        + "<p>" + esc(v.issuance.means) + "</p>"
+        + '<div class="dim" style="font-size:12px">Parameters used for the check above: '
+        + esc(v.parameterSource.replace(/-/g, " ")) + ".</div>"
+        + "</div>" : "");
+});
+
+// ── Tabs ──────────────────────────────────────────────────
+for (const b of $("tabs").querySelectorAll("button")) {
+  b.addEventListener("click", () => selectTab(b.dataset.t));
+}
+
+async function selectTab(t) {
+  for (const b of $("tabs").querySelectorAll("button")) {
+    b.setAttribute("aria-selected", String(b.dataset.t === t));
+  }
+  $("pane").innerHTML = '<div class="empty">Loading…</div>';
+  try { await PANES[t](); }
+  catch (e) { $("pane").innerHTML = '<div class="msg err">' + esc(e.message) + "</div>"; }
+}
+
+function guard(r) {
+  if (r.status === 200) return null;
+  return '<div class="msg err">' + esc(r.body.error || "Not available.")
+    + (r.body.remedy ? '<div class="hint" style="color:inherit;opacity:.85">' + esc(r.body.remedy) + "</div>" : "")
+    + "</div>";
+}
+
+const PANES = {
+  async conjunctions() {
+    const r = await api("/verify/conjunctions?limit=300");
+    const g = guard(r); if (g) return void ($("pane").innerHTML = g);
+    const rows = r.body.conjunctions || [];
+    $("pane").innerHTML = '<div class="panel" style="padding:0 18px 6px">'
+      + '<div class="hint" style="padding:14px 0 4px">' + esc(r.body.modelNote) + "</div>"
+      + "<table><thead><tr><th>Row</th><th>Conjunction</th><th class='num'>Miss (km)</th>"
+      + "<th class='num'>P<sub>c</sub></th><th>Closest approach</th><th>Archived</th><th>Model</th></tr></thead><tbody>"
+      + (rows.length ? rows.map(c =>
+          "<tr><td class='mono'>#" + esc(c.seq) + "<div class='dim' style='font-size:10.5px'>"
+          + esc(String(c.hash || "").slice(0, 10)) + "</div></td>"
+          + "<td>" + esc(c.a) + " <span class='dim'>vs</span> " + esc(c.b) + "</td>"
+          + "<td class='num'>" + esc(c.missKm ?? "—") + "</td>"
+          + "<td class='num'>" + fmtPc(c.pc) + "</td>"
+          + "<td class='dim'>" + fmtT(c.tca) + "</td>"
+          + "<td class='dim'>" + fmtT(c.archivedAt) + "</td>"
+          + "<td class='dim' style='font-size:11.5px'>" + esc(c.pcModel) + "</td></tr>").join("")
+        : "<tr><td colspan='7' class='empty'>The archive holds no warnings for this operator in the granted window.</td></tr>")
+      + "</tbody></table></div>";
+  },
+
+  async decisions() {
+    const r = await api("/verify/decisions?limit=300");
+    const g = guard(r); if (g) return void ($("pane").innerHTML = g);
+    const rows = r.body.decisions || [];
+    $("pane").innerHTML = '<div class="panel" style="padding:0 18px 6px">'
+      + "<table><thead><tr><th>Warning</th><th>Decision</th><th>Recorded</th>"
+      + "<th class='num'>Response</th><th class='num'>Lead time</th><th>Rationale</th></tr></thead><tbody>"
+      + (rows.length ? rows.map(d =>
+          "<tr><td class='mono'>#" + esc(d.warningSeq) + "</td>"
+          + "<td><span class='chip " + (String(d.decision).startsWith("manoeuvre_ex") ? "c-ok"
+              : d.decision === "risk_accepted" ? "c-warn" : "c-soft") + "'>"
+          + esc(String(d.decision).replace(/_/g, " ")) + "</span></td>"
+          + "<td class='dim'>" + fmtT(d.decidedAt) + "</td>"
+          + "<td class='num dim'>" + (d.responseMinutes != null ? esc(d.responseMinutes) + " min" : "—") + "</td>"
+          + "<td class='num dim'>" + (d.leadHoursAtDecision != null ? esc(d.leadHoursAtDecision) + " h" : "—") + "</td>"
+          + "<td>" + esc(d.rationale || "—") + "</td></tr>").join("")
+        : "<tr><td colspan='6' class='empty'>No decisions recorded in the granted window. "
+          + "That is not evidence that none were taken — only that none were recorded here.</td></tr>")
+      + "</tbody></table></div>";
+  },
+
+  async summary() {
+    const thr = $("thr").value.trim();
+    const r = await api("/verify/summary" + (thr ? "?thresholdPc=" + encodeURIComponent(thr) : ""));
+    const g = guard(r); if (g) return void ($("pane").innerHTML = g);
+    const s = r.body;
+    const kinds = s.decisionsByKind || {};
+    const cards = [
+      ["Screened", s.conjunctionsScreened],
+      ["Above threshold", s.conjunctionsAboveThreshold],
+      ["Decisions recorded", s.decisionsRecorded],
+      ["Manoeuvres executed", s.manoeuvresExecuted],
+      ["Risk accepted", kinds.risk_accepted || 0],
+      ["Median response", s.medianResponseMinutes != null ? s.medianResponseMinutes + " min" : "—"],
+      ["No decision recorded", s.unansweredAboveThreshold]
+    ];
+    $("pane").innerHTML = '<div class="panel"><div class="grid kv">'
+      + cards.map(([k, v]) => '<div><div class="k">' + esc(k) + '</div><div class="v">'
+          + esc(v ?? "—") + "</div></div>").join("")
+      + "</div>"
+      + '<div class="hint" style="margin-top:14px">Window ' + esc(fmtD(s.windowFrom)) + " → "
+      + esc(fmtD(s.windowTo))
+      + (s.thresholdPc != null ? " · threshold " + esc(s.thresholdPc) : " · no threshold filter applied")
+      + "</div>"
+      + (Object.keys(kinds).length
+          ? '<div style="margin-top:10px">' + Object.entries(kinds).map(([k, v]) =>
+              '<span class="chip c-soft" style="margin-right:6px">' + esc(k.replace(/_/g, " "))
+              + " · " + esc(v) + "</span>").join("") + "</div>"
+          : "")
+      + (s.unansweredNote ? '<div class="hint" style="margin-top:14px">' + esc(s.unansweredNote) + "</div>" : "")
+      + '<div class="hint" style="margin-top:10px">' + esc(s.caveat || "") + "</div>"
+      + "</div>";
+  },
+
+  async knowable() {
+    $("pane").innerHTML = '<div class="panel">'
+      + '<div class="row">'
+      + '<div><label for="k-at">As of</label><input id="k-at" type="date"></div>'
+      + '<div style="max-width:190px"><label for="k-obj">Object ID (optional)</label>'
+      + '<input id="k-obj" placeholder="e.g. 25544" spellcheck="false"></div>'
+      + '<div style="max-width:150px"><label for="k-h">Look back (hours)</label>'
+      + '<input id="k-h" value="72"></div>'
+      + '<button id="k-go" class="primary">Ask</button></div>'
+      + '<div class="hint">Answers from rows the archive already held at that moment, not from re-propagating '
+      + "today&rsquo;s element sets backwards. The difference between what was true and what was known is "
+      + "usually the whole dispute.</div>"
+      + '<div id="k-out"></div></div>';
+
+    $("k-go").addEventListener("click", async () => {
+      const at = $("k-at").value;
+      if (!at) return void ($("k-out").innerHTML = '<div class="msg err">Pick a date.</div>');
+      const q = new URLSearchParams({ at: new Date(at + "T23:59:59Z").toISOString(), windowHours: $("k-h").value || "72" });
+      if ($("k-obj").value.trim()) q.set("objectId", $("k-obj").value.trim());
+      const r = await api("/verify/knowable?" + q);
+      const g = guard(r); if (g) return void ($("k-out").innerHTML = g);
+      const b = r.body;
+      $("k-out").innerHTML =
+        '<div class="verdict neutral" style="margin-top:16px"><h3>'
+        + esc(b.warningsHeld) + " warning(s) held, " + esc(b.decisionsTaken) + " decision(s) recorded</h3>"
+        + '<div class="dim" style="font-size:12px">as of ' + esc(fmtT(b.asOf))
+        + ", looking back " + esc(b.lookbackHours) + " h"
+        + (b.objectId ? " · object " + esc(b.objectId) : "") + "</div>"
+        + "<p>" + esc(b.means) + "</p><p class='dim'>" + esc(b.limits) + "</p></div>"
+        + (b.warnings.length
+            ? "<table><thead><tr><th>Row</th><th>Conjunction</th><th class='num'>Miss (km)</th>"
+              + "<th class='num'>P<sub>c</sub></th><th>Closest approach</th><th>Archived</th></tr></thead><tbody>"
+              + b.warnings.map(c => "<tr><td class='mono'>#" + esc(c.seq) + "</td><td>" + esc(c.a)
+                  + " <span class='dim'>vs</span> " + esc(c.b) + "</td><td class='num'>" + esc(c.missKm ?? "—")
+                  + "</td><td class='num'>" + fmtPc(c.pc) + "</td><td class='dim'>" + fmtT(c.tca)
+                  + "</td><td class='dim'>" + fmtT(c.archivedAt) + "</td></tr>").join("")
+              + "</tbody></table>"
+            : "");
+    });
+  },
+
+  async compliance() {
+    const thr = $("thr").value.trim();
+    const r = await api("/verify/compliance" + (thr ? "?thresholdPc=" + encodeURIComponent(thr) : ""));
+    const g = guard(r); if (g) return void ($("pane").innerHTML = g);
+    const b = r.body;
+    const fw = b.frameworks || [];
+    // Two different axes, deliberately shown side by side. `support` is what
+    // this KIND of evidence could ever establish for that obligation; `status`
+    // is what this operator's archive actually holds. Collapsing them into one
+    // badge would let "we have the records" read as "the obligation is met",
+    // which is the exact misreading the compliance module exists to prevent.
+    const statusChip = s => '<span class="chip ' + (
+        s === "evidence-held" ? "c-ok"
+      : s === "evidence-partial" ? "c-warn"
+      : s === "not-evidenceable" ? "c-bad" : "c-soft") + '">' + esc(String(s).replace(/-/g, " ")) + "</span>";
+    $("pane").innerHTML = fw.map(f =>
+      '<div class="panel"><div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">'
+      + "<b>" + esc(f.name) + "</b>"
+      + '<span class="dim" style="font-size:12px">' + esc(f.citation || "")
+      + (f.jurisdiction ? " · " + esc(f.jurisdiction) : "") + "</span>"
+      + (f.url ? ' <a href="' + esc(f.url) + '" target="_blank" rel="noopener" style="font-size:12px">source</a>' : "")
+      + "</div>"
+      + "<table style='margin-top:8px'><thead><tr><th>Obligation</th><th>Evidence in this archive</th>"
+      + "<th>What screening can show</th></tr></thead><tbody>"
+      + (f.obligations || []).map(o =>
+          "<tr><td>" + esc(o.text) + "<div class='dim mono' style='font-size:10.5px'>" + esc(o.ref) + "</div></td>"
+          + "<td>" + statusChip(o.status)
+          + (o.evidenceHeld && o.evidenceHeld.length
+              ? "<div class='dim' style='font-size:11px;margin-top:3px'>holds: " + esc(o.evidenceHeld.join(", ")) + "</div>" : "")
+          + (o.evidenceMissing && o.evidenceMissing.length
+              ? "<div class='dim' style='font-size:11px'>missing: " + esc(o.evidenceMissing.join(", ")) + "</div>" : "")
+          + "</td>"
+          + "<td><span class='chip " + (o.support === "none" ? "c-bad"
+              : o.support === "supports" ? "c-ok" : "c-warn") + "'>" + esc(o.support) + "</span>"
+          + "<div class='dim' style='font-size:11px;margin-top:3px'>" + esc(o.why || o.supportMeans || "") + "</div>"
+          + "</td></tr>").join("")
+      + "</tbody></table></div>").join("")
+      + '<div class="msg info">' + esc(b.thresholdNote || "") + "</div>"
+      + '<div class="msg info">' + esc(b.limits || "") + "</div>";
+  },
+
+  async portfolio() {
+    const r = await api("/verify/portfolio");
+    const g = guard(r); if (g) return void ($("pane").innerHTML = g);
+    const b = r.body;
+    $("pane").innerHTML = '<div class="panel"><div class="hint" style="margin-bottom:10px">'
+      + esc(b.note) + "</div>"
+      + "<table><thead><tr><th>Operator</th><th>Scopes</th><th>Record window</th>"
+      + "<th>Issued</th><th>Expires</th></tr></thead><tbody>"
+      + (b.grants || []).map(x =>
+          "<tr><td>" + esc(x.org || "—") + "<div class='mono dim' style='font-size:10.5px'>"
+          + esc(x.grantId) + "</div></td>"
+          + "<td>" + (x.scopes || []).map(s => "<span class='chip c-soft'>" + esc(s) + "</span>").join(" ") + "</td>"
+          + "<td class='dim'>" + esc(fmtD(x.window.from)) + " → " + esc(fmtD(x.window.to)) + "</td>"
+          + "<td class='dim'>" + esc(fmtD(x.issuedAt)) + "</td>"
+          + "<td class='dim'>" + esc(fmtD(x.expiresAt)) + "</td></tr>").join("")
+      + "</tbody></table></div>";
+  }
+};
+
+// A token already in this tab (a reload, or a second document in the same
+// session) skips the gate.
+if (TOKEN.get()) {
+  api("/verify/grant").then(r => {
+    if (r.status !== 200) { TOKEN.clear(); return; }
+    GRANT = r.body;
+    $("gate").hidden = true;
+    $("console").hidden = false;
+    renderGrant();
+    selectTab("conjunctions");
+  });
+}
+</script>
+</body></html>
