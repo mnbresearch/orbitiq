@@ -27,6 +27,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,6 +40,7 @@ const ledger = await import("../src/ledger.js");
 const decisions = await import("../src/decisions.js");
 const grants = await import("../src/grants.js");
 const proof = await import("../src/proof.js");
+const audit = await import("../src/audit.js");
 
 let passed = 0, failed = 0;
 function check(name, fn) {
@@ -193,6 +195,82 @@ test("digest verification detects a document that does not match the archive", (
     const v = grants.verifyReport({ grant, claimedDigest: data.reportDigest, thresholdPc: 1e-4 });
     assert.match(v.means, /does not establish/i);
     assert.match(v.limits, /tamper-evident, not tamper-proof/i);
+  });
+});
+
+// ── The regression this file previously could not have caught ──
+//
+// The first version of the digest test above passed while the feature was
+// broken, because it compared two computations over an EMPTY row set: both
+// sides produced the SHA-256 of nothing and agreed. An end-to-end run with
+// real rows failed immediately — the HTTP route fills in a default 90-day
+// window and the mission threshold, and the verifier knew neither, so every
+// genuine document read as forged.
+//
+// The lesson is not "add a case with data". It is that a verification test
+// whose fixture is empty verifies nothing, and that this product's worst
+// failure direction is a truthful document that fails to verify. So this test
+// asserts on a non-empty digest explicitly, and pins the recovery mechanism.
+test("a genuine report verifies without the reader retyping its parameters", () => {
+  const window = { since: iso(now - 30 * 86400e3), until: iso(now + 86400e3) };
+  const threshold = 1e-5;
+
+  // Exactly what the /proof/diligence route does: build, then audit.
+  const data = proof.build({
+    org: "acme", ws: "ws-1", since: window.since, until: window.until,
+    thresholdPc: threshold, operatorName: "ACME"
+  });
+  audit.record("report.generated", {
+    ws: "ws-1", org: "acme", actor,
+    detail: {
+      window: `${window.since}..${window.until}`,
+      thresholdPc: threshold, rowCount: data.rows.length, digest: data.reportDigest
+    }
+  });
+
+  const g = grants.issue("ws-1", { verifierName: "First Click LLP", scopes: ["conjunctions"], org: "acme", actor });
+  const grant = grants.resolve(g.token).grant;
+
+  check("the fixture is not empty, so the digest means something", () => {
+    assert.ok(data.rows.length > 0, "no rows — this test would pass on an empty archive and prove nothing");
+    assert.notEqual(data.reportDigest, crypto.createHash("sha256").update("").digest("hex").slice(0, 32),
+      "the digest is the hash of nothing; the previous version of this suite passed exactly this way");
+  });
+
+  check("digest alone is enough — the window comes back from the archive", () => {
+    const v = grants.verifyReport({ grant, claimedDigest: data.reportDigest });
+    assert.equal(v.matches, true,
+      "a genuine document failed verification when the verifier supplied only the digest. "
+      + "Asking an underwriter to retype a date range and a threshold before the check works "
+      + "makes a truthful record look forged, which is the worst direction for this to be wrong in");
+    assert.equal(v.parameterSource, "recovered-from-archive");
+  });
+
+  check("the recovery is itself an archived, chained fact", () => {
+    const v = grants.verifyReport({ grant, claimedDigest: data.reportDigest });
+    assert.equal(v.issuance.found, true);
+    assert.ok(v.issuance.ledgerSeq > 0 && v.issuance.ledgerHash, "the issuance record is not cited");
+    assert.ok(v.issuance.reportsGeneratedInArchive >= 1,
+      "the count of generated reports must be visible, or an operator could produce many and "
+      + "hand over only the flattering one without that choice being observable");
+  });
+
+  check("an unknown digest is reported as unknown, not as forged", () => {
+    const v = grants.verifyReport({ grant, claimedDigest: "ff".repeat(16) });
+    assert.equal(v.issuance.found, false);
+    assert.match(v.issuance.means, /ordinary explanation/i,
+      "a digest absent from the archive has innocent explanations — an older document, another "
+      + "tool. Leading with the accusation would make this system a generator of false disputes");
+  });
+
+  check("an explicitly supplied window still wins over the recovered one", () => {
+    const v = grants.verifyReport({
+      grant, claimedDigest: data.reportDigest,
+      since: iso(now + 10 * 86400e3), until: iso(now + 20 * 86400e3)
+    });
+    assert.equal(v.parameterSource, "supplied-by-verifier",
+      "the archive silently overrode what the verifier asked for; a verifier must always be able "
+      + "to check a window of their own choosing");
   });
 });
 
