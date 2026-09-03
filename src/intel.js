@@ -106,6 +106,13 @@ export function augmentConjunctions(events, satsById, hbrM = 20) {
         pcMaxIsotropic: f.pcMaxIsotropic,
         pcCalibration: f.pcCalibration,
         pcFloorApplied: f.pcFloorApplied,
+        // Which side of the probability peak this row sits on, archived with
+        // the row rather than recomputed later. The covariance model changes
+        // over time; the regime a warning was issued under does not, and a
+        // reader years from now needs the one that applied at the time.
+        dilutionRegime: f.dilution?.regime || null,
+        pcAtPeak: f.dilution?.pcAtPeak ?? null,
+        pcSuppressionFactor: f.dilution?.suppressionFactor ?? null,
         // Stamp the covariance model. The archive is append-only and already
         // holds rows written under cov-v1, whose radial/cross-track sigma was
         // ~5x too tight and drove Pc down by tens of orders of magnitude. A

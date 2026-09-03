@@ -95,6 +95,44 @@ export function build({ org = null, ws = null, since, until, thresholdPc = null,
     seals: seals.slice(-3),
     anchor,
     counts, summary, rows,
+    // How many of these warnings sit past the probability peak.
+    //
+    // Reported at fleet level because the individual figure is easy to wave
+    // away and the aggregate is not: if most of a period's warnings are in the
+    // dilution region, then most of that period's probabilities are being held
+    // down by what the catalogue does not know, and a threshold applied to
+    // them is triggering less often than its author intended.
+    dilution: (() => {
+      const withRegime = rows.filter(r => r.warning.dilutionRegime);
+      const counts = {};
+      for (const r of withRegime) {
+        counts[r.warning.dilutionRegime] = (counts[r.warning.dilutionRegime] || 0) + 1;
+      }
+      const diluted = counts.dilution || 0;
+      const factors = withRegime
+        .map(r => Number(r.warning.pcSuppressionFactor))
+        .filter(Number.isFinite).sort((a, b) => a - b);
+      return {
+        rowsWithRegime: withRegime.length,
+        counts,
+        dilutedFraction: withRegime.length ? +(diluted / withRegime.length).toFixed(3) : null,
+        medianSuppressionFactor: factors.length ? +factors[factors.length >> 1].toPrecision(3) : null,
+        means: withRegime.length === 0
+          ? "Regime was not recorded for these rows. Warnings archived before this was added "
+          + "do not carry it and cannot have it computed retrospectively, because the "
+          + "covariance in force at the time is not recoverable from the row."
+          : diluted / withRegime.length >= 0.5
+            ? "Most of these warnings sit past the probability maximum, where a larger "
+            + "uncertainty produces a SMALLER probability. Their probabilities are therefore "
+            + "held down by the limits of public tracking data rather than by the encounters "
+            + "being benign, and any fixed threshold applied to them fires less often than "
+            + "its author intended."
+            : "Most of these warnings sit at or below the probability maximum, where the "
+            + "figure is informative about the encounter rather than about the tracking.",
+        limits: "Regime is judged against an equivalent circular covariance. It indicates "
+              + "which side of the maximum an encounter falls on, not a precise boundary."
+      };
+    })(),
     // Coverage sits beside the warnings deliberately. A list of what was found
     // means little without a record of when anyone was looking, and a document
     // that volunteers its own gaps is worth more than one that presents a
@@ -236,6 +274,23 @@ ${chainBad ? `<div class="note warn"><b>Archive integrity check FAILED at genera
 ${d.summary.unansweredAboveThreshold ? `<div class="note">
   <b>${esc(d.summary.unansweredAboveThreshold)} warning(s) above threshold have no decision recorded in this system.</b>
   ${esc(d.summary.unansweredNote || "")}</div>` : ""}
+
+<h2>What the probabilities can and cannot resolve</h2>
+<div class="verify">
+  ${d.dilution.rowsWithRegime === 0
+    ? `<div class="dim">${esc(d.dilution.means)}</div>`
+    : `<div>${esc(Math.round((d.dilution.dilutedFraction ?? 0) * 100))}% of the
+        ${esc(d.dilution.rowsWithRegime)} warning(s) with a recorded regime sit past the
+        probability maximum${d.dilution.medianSuppressionFactor
+          ? `, with a median probability ${esc(d.dilution.medianSuppressionFactor)}&times; below
+             the most their geometry could produce` : ""}.</div>
+       <div class="note warn" style="margin-top:8px">${esc(d.dilution.means)}</div>`}
+  <div class="dim" style="margin-top:8px">Probability of collision is not monotonic in
+    uncertainty: it rises with the covariance, peaks where the 1&sigma; error equals the miss
+    distance divided by &radic;2, and falls away beyond that. Past the peak a low figure
+    reflects how little the public catalogue resolves, not how safe the encounter is.</div>
+  <div class="dim" style="margin-top:6px">${esc(d.dilution.limits)}</div>
+</div>
 
 <h2>Screening coverage over this period</h2>
 <div class="verify">
