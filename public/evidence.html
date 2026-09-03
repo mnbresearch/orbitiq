@@ -145,6 +145,33 @@
     </tr></thead>
     <tbody id="rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
   </table>
+
+  <!--
+    Grants. Issuing access had the same problem the decision log had: it
+    existed only as a POST from the command line, which meant the Underwriter
+    tier could be sold but not used. An operator will not open a terminal to
+    give their insurer a login.
+  -->
+  <h2>Who can verify your record</h2>
+  <p class="dim" style="margin:0 0 12px;max-width:760px;font-size:13px">
+    A grant gives a named third party &mdash; an insurer, a regulator, a prime &mdash; read access to the
+    evidence above through <a href="/verify.html">the verifier console</a>. It is scoped, time-boxed and
+    revocable, and there is no endpoint on that path that can alter what you recorded.</p>
+
+  <div class="toolbar">
+    <button id="btn-grant" class="primary">Issue a grant</button>
+    <span class="spacer"></span>
+    <span class="dim" style="font-size:12px">Verifier console: <span class="mono">/verify.html</span></span>
+  </div>
+
+  <div id="grant-token"></div>
+
+  <table>
+    <thead><tr>
+      <th>Verifier</th><th>Scopes</th><th>Record window</th><th>Issued</th><th>Expires</th><th>Status</th><th></th>
+    </tr></thead>
+    <tbody id="grants"><tr><td colspan="7" class="empty">—</td></tr></tbody>
+  </table>
 </div>
 
 <dialog id="dlg">
@@ -176,6 +203,44 @@
     <div class="dlg-f">
       <button value="cancel">Cancel</button>
       <button id="d-save" class="primary" value="save">Record</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="gdlg">
+  <form method="dialog" id="gdlg-form">
+    <div class="dlg-h">
+      <h3 style="margin:0 0 2px;font-size:16px">Issue a grant</h3>
+      <div class="dim" style="font-size:12.5px">Read-only access to your evidence for a named third party.</div>
+    </div>
+    <div class="dlg-b">
+      <div class="field">
+        <label for="g-name">Who is it for</label>
+        <input id="g-name" placeholder="e.g. Syndicate 1234, or the licensing authority">
+        <div class="hint">Required. A grant issued to nobody in particular cannot be audited later,
+          which is the whole reason for having one.</div>
+      </div>
+      <div class="field">
+        <label for="g-email">Contact email (optional)</label>
+        <input id="g-email" type="email" placeholder="reviewer@example.com">
+      </div>
+      <div class="field">
+        <label>What they may read</label>
+        <div id="g-scopes"></div>
+      </div>
+      <div class="field" style="display:flex;gap:10px">
+        <div style="flex:1"><label for="g-from">Record window from</label><input id="g-from" type="date"></div>
+        <div style="flex:1"><label for="g-to">to</label><input id="g-to" type="date"></div>
+        <div style="width:120px"><label for="g-days">Valid for (days)</label><input id="g-days" type="number" value="365"></div>
+      </div>
+      <div class="hint">The record window bounds what they can see; the validity period bounds how long
+        they can see it. Both are capped, because an access right nobody remembers issuing is one nobody
+        remembers revoking.</div>
+      <div id="gdlg-msg"></div>
+    </div>
+    <div class="dlg-f">
+      <button value="cancel">Cancel</button>
+      <button id="g-save" class="primary" value="save">Issue</button>
     </div>
   </form>
 </dialog>
@@ -244,7 +309,114 @@ async function load() {
 
   renderCards();
   await loadWarnings();
+  await loadGrants();
 }
+
+// ── Grants ────────────────────────────────────────────────
+let SCOPES = [];
+
+async function loadGrants() {
+  const [sc, gr] = await Promise.all([api("/grants/scopes"), api("/grants")]);
+  SCOPES = sc.body.scopes || [];
+  if (gr.status !== 200) {
+    $("grants").innerHTML = `<tr><td colspan="7" class="empty">${esc(gr.body.error
+      || "Your plan does not include issuing verifier access.")}</td></tr>`;
+    $("btn-grant").disabled = true;
+    return;
+  }
+  const rows = gr.body.grants || [];
+  $("grants").innerHTML = rows.length ? rows.map(g => {
+    const cls = g.status === "active" ? "c-done" : g.status === "revoked" ? "c-none" : "c-soft";
+    return `<tr>
+      <td>${esc(g.verifierName)}${g.verifierEmail
+        ? `<div class="dim" style="font-size:11px">${esc(g.verifierEmail)}</div>` : ""}
+        <div class="dim mono" style="font-size:10.5px">${esc(g.grantId)}</div></td>
+      <td>${(g.scopes || []).map(s => `<span class="chip c-soft">${esc(s)}</span>`).join(" ")}</td>
+      <td class="dim">${esc(fmtD(g.windowFrom))} → ${esc(fmtD(g.windowTo))}</td>
+      <td class="dim">${esc(fmtD(g.issuedAt))}</td>
+      <td class="dim">${esc(fmtD(g.expiresAt))}</td>
+      <td><span class="chip ${cls}">${esc(g.status)}</span></td>
+      <td style="text-align:right">${g.status === "active"
+        ? `<button data-revoke="${esc(g.grantId)}">Revoke</button>` : ""}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="7" class="empty">Nobody has access to your record.</td></tr>`;
+
+  for (const b of document.querySelectorAll("#grants button[data-revoke]")) {
+    b.addEventListener("click", async () => {
+      // No confirm dialog on purpose. Revoking is the safe direction, it is
+      // instant, and the grant row stays in the archive marked revoked — so
+      // the action is reversible in the only sense that matters: the record
+      // of it having existed is not destroyed.
+      b.disabled = true;
+      const r = await api(`/grants/${encodeURIComponent(b.dataset.revoke)}`, { method: "DELETE" });
+      if (r.status !== 200) {
+        $("auth-msg").innerHTML = `<div class="msg err">${esc(r.body.error || "Could not revoke.")}</div>`;
+        b.disabled = false;
+        return;
+      }
+      await loadGrants();
+    });
+  }
+}
+
+const fmtD = t => t ? String(t).slice(0, 10) : "—";
+
+$("btn-grant").addEventListener("click", () => {
+  $("g-name").value = ""; $("g-email").value = ""; $("g-days").value = "365";
+  $("gdlg-msg").innerHTML = "";
+  $("g-scopes").innerHTML = SCOPES.map((s, i) =>
+    `<label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0;color:var(--ink);font-size:13px">
+       <input type="checkbox" value="${esc(s.scope)}" ${i < 2 ? "checked" : ""}
+              style="width:auto;margin-top:3px">
+       <span><b>${esc(s.scope)}</b><br><span class="dim" style="font-size:11.5px">${esc(s.means)}</span></span>
+     </label>`).join("");
+  $("gdlg").showModal();
+});
+
+$("gdlg-form").addEventListener("submit", async (e) => {
+  if (e.submitter && e.submitter.value === "cancel") return;
+  e.preventDefault();
+  const scopes = [...$("g-scopes").querySelectorAll("input:checked")].map(x => x.value);
+  const body = {
+    verifierName: $("g-name").value.trim(),
+    verifierEmail: $("g-email").value.trim() || undefined,
+    scopes,
+    windowFrom: $("g-from").value ? new Date($("g-from").value + "T00:00:00Z").toISOString() : undefined,
+    windowTo: $("g-to").value ? new Date($("g-to").value + "T23:59:59Z").toISOString() : undefined,
+    days: Number($("g-days").value) || undefined
+  };
+  $("g-save").disabled = true;
+  const r = await api("/grants", { method: "POST", body: JSON.stringify(body) });
+  $("g-save").disabled = false;
+
+  if (r.status !== 201) {
+    $("gdlg-msg").innerHTML = `<div class="msg err">${esc(r.body.error || "Could not issue that grant.")}</div>`;
+    return;
+  }
+  $("gdlg").close();
+
+  // Shown once, here, and never retrievable again — only a hash is stored, so
+  // there is no "resend" to build. Saying so plainly at this moment is the
+  // difference between a support ticket and a copy-paste.
+  $("grant-token").innerHTML = `<div class="msg ok">
+    <div style="margin-bottom:7px"><b>Grant issued to ${esc(r.body.verifierName || body.verifierName)}.</b>
+      Send them this token and the link — it is shown once and cannot be recovered.</div>
+    <div class="mono" style="word-break:break-all;background:rgba(0,0,0,.28);padding:9px 11px;border-radius:7px">
+      ${esc(r.body.token)}</div>
+    <div style="margin-top:9px;display:flex;gap:8px;flex-wrap:wrap">
+      <button id="copy-tok">Copy token</button>
+      <button id="hide-tok">I have saved it</button>
+      <span class="dim" style="font-size:12px;align-self:center">Verifier console:
+        <span class="mono">${esc(location.origin)}/verify.html</span></span>
+    </div></div>`;
+  $("copy-tok").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(r.body.token); $("copy-tok").textContent = "Copied"; }
+    catch { $("copy-tok").textContent = "Copy failed — select it manually"; }
+  });
+  $("hide-tok").addEventListener("click", () => { $("grant-token").innerHTML = ""; });
+
+  await loadGrants();
+});
 
 function renderCards() {
   const s = SUMMARY || {};
