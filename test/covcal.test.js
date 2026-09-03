@@ -21,14 +21,50 @@
 // ============================================================
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import * as cc from "../src/covcal.js";
 import { covarianceModel } from "../src/pc.js";
 
-const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CAT = JSON.parse(fs.readFileSync(path.join(ROOT, "data/celestrak-active.sample.json"), "utf8"));
+/**
+ * A generated catalogue, rather than a checked-in one.
+ *
+ * The first version of this file read a 353 kB sample catalogue from data/.
+ * That file existed only on the machine it was written on — it was never
+ * committed — so the suite passed locally and every CI job failed at import
+ * with no test output at all, which is the least diagnosable way to fail.
+ *
+ * Generating the fixture removes the dependency and is better on its own
+ * terms: the distribution of inclinations, eccentricities and object types is
+ * chosen here rather than inherited from whatever happened to be in orbit the
+ * day someone saved a file, so a reader can see exactly what the calibration
+ * was exercised against.
+ */
+function makeCatalogue(n = 320) {
+  return Array.from({ length: n }, (_, i) => {
+    const debris = i % 5 === 0;
+    return {
+      OBJECT_NAME: debris ? `COSMOS 2251 DEB ${i}` : `TESTSAT-${i}`,
+      OBJECT_TYPE: debris ? "DEBRIS" : "PAYLOAD",
+      NORAD_CAT_ID: 90000 + i,
+      EPOCH: "2026-08-14T16:52:01.133",
+      // LEO, spread across the altitude band where conjunctions actually happen.
+      MEAN_MOTION: 14.2 + (i % 40) * 0.04,
+      ECCENTRICITY: 0.0005 + (i % 7) * 0.0004,
+      INCLINATION: 45 + (i % 50),
+      RA_OF_ASC_NODE: (i * 7.3) % 360,
+      ARG_OF_PERICENTER: (i * 11.7) % 360,
+      MEAN_ANOMALY: (i * 23.1) % 360,
+      BSTAR: 0.0001,
+      MEAN_MOTION_DOT: 1e-5,
+      MEAN_MOTION_DDOT: 0,
+      EPHEMERIS_TYPE: 0,
+      CLASSIFICATION_TYPE: "U",
+      ELEMENT_SET_NO: 999,
+      REV_AT_EPOCH: 10000
+    };
+  });
+}
+
+const CAT = makeCatalogue();
 
 let passed = 0, failed = 0;
 function check(name, fn) {
@@ -75,7 +111,7 @@ console.log("# ── covariance calibration ───────────�
 test("the residual is decomposed into the frame it claims to use", () => {
   const gp = CAT.find(s => s.MEAN_MOTION > 14 && s.ECCENTRICITY < 0.01);
 
-  check("a residual is produced at all, for a real GP record", () => {
+  check("a residual is produced at all, for a well-formed GP record", () => {
     const r = cc.residual(gp, shifted(gp, { lagDays: 1 }));
     assert.ok(r, "no residual produced from a valid pair");
     assert.ok([r.radialKm, r.inTrackKm, r.crossTrackKm].every(Number.isFinite));
@@ -232,11 +268,11 @@ test("the fit refuses to claim uncertainty shrinks with age", () => {
   });
 });
 
-test("end to end on real element sets", () => {
-  // Two snapshots built from the shipped catalogue: the second is every object
+test("end to end across a catalogue", () => {
+  // Two snapshots from the generated catalogue: the second is every object
   // moved along its own orbit by a day plus a small extra offset, so the
-  // machinery runs over hundreds of genuine GP records with a known answer.
-  const sample = CAT.filter(s => s.MEAN_MOTION > 11).slice(0, 300);
+  // machinery runs over hundreds of GP records that SGP4 will actually accept.
+  const sample = CAT.slice(0, 300);
   const snapA = { at: "2026-08-14T00:00:00Z", byId: {} };
   const snapB = { at: "2026-08-15T00:00:00Z", byId: {} };
   for (const gp of sample) {
@@ -245,7 +281,7 @@ test("end to end on real element sets", () => {
   }
   const cal = cc.build([snapA, snapB]);
 
-  check("it produces a calibration from real GP records", () => {
+  check("it produces a calibration from a full catalogue pass", () => {
     assert.ok(cal.pairsUsable > 200, `only ${cal.pairsUsable} usable pairs of ${cal.pairsAttempted}`);
     assert.ok(cal.byKind.payload?.bins?.length, "no payload bins");
   });
