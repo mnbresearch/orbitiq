@@ -63,6 +63,45 @@ function bruteForceMin(gpA, gpB, start, windowSec, stepSec = 0.5) {
 }
 
 /**
+ * Every distinct close approach in the window, by brute force at 1 s.
+ *
+ * The screener used to keep only the deepest approach per pair, so this
+ * fixture's second encounter — a real 14.5 km pass, well inside the reporting
+ * threshold — was silently dropped and the test asserted `length === 1`. The
+ * expectation was encoding the defect.
+ *
+ * Counting the true minima here means the assertion is derived from the orbits
+ * rather than from a number somebody wrote down, so it stays honest if the
+ * fixture ever changes.
+ */
+function bruteForceAllMinima(gpA, gpB, start, windowSec, thresholdKm) {
+  const ra = satellite.json2satrec(gpA), rb = satellite.json2satrec(gpB);
+  const d = [];
+  for (let s = 0; s <= windowSec; s += 1) {
+    const t = new Date(start.getTime() + s * 1000);
+    const pa = satellite.propagate(ra, t)?.position;
+    const pb = satellite.propagate(rb, t)?.position;
+    if (!pa || !pb) continue;
+    d.push([s, Math.hypot(pa.x - pb.x, pa.y - pb.y, pa.z - pb.z)]);
+  }
+  const mins = [];
+  for (let i = 1; i < d.length - 1; i++) {
+    if (d[i][1] < thresholdKm && d[i][1] <= d[i - 1][1] && d[i][1] <= d[i + 1][1]) {
+      // Two minima closer together than a couple of minutes are the same pass
+      // sampled twice, not two encounters.
+      // Indexed by name, not position: an earlier version wrote
+      // mins[mins.length-1][0] on an array of objects, so the comparison was
+      // NaN > 120 — false — and every minimum after the first was silently
+      // dropped. That made the helper agree with the very defect it was
+      // written to expose.
+      const last = mins[mins.length - 1];
+      if (!last || d[i][0] - last.tSec > 120) mins.push({ tSec: d[i][0], d: d[i][1] });
+    }
+  }
+  return mins;
+}
+
+/**
  * Search phasing offsets to find a genuine close approach, so the fixture is
  * a real orbital encounter rather than a hand-waved one.
  */
@@ -98,8 +137,39 @@ test("screening", async () => {
   const threshold = Math.max(5, Math.ceil(truth.d) + 2);
   const res = screenConjunctions(sats, "testco", WINDOW_SEC / 3600, threshold, { start: START });
 
+  const trueMinima = bruteForceAllMinima(A, B, START, WINDOW_SEC, threshold);
+
   check("detects a real crossing conjunction", () => {
-    assert.equal(res.events.length, 1, `expected 1 event, got ${res.events.length}`);
+    assert.ok(res.events.length >= 1, "the encounter was not found at all");
+  });
+
+  check("finds EVERY distinct approach, not just the deepest", () => {
+    // This pair passes inside the threshold twice in the window. Reporting one
+    // of them is not a rounding difference: each approach has its own time of
+    // closest approach and needs its own decision, and the evidence layer binds
+    // a decision to a specific warning row — so a dropped approach is an
+    // encounter with nothing to attach a decision to.
+    assert.equal(res.events.length, trueMinima.length,
+      `brute force finds ${trueMinima.length} approach(es) under ${threshold} km at `
+      + `${trueMinima.map(m => m.tSec + "s/" + m.d.toFixed(1) + "km").join(", ")}, `
+      + `but the screener reported ${res.events.length}`);
+  });
+
+  check("every reported approach matches a real one in time and distance", () => {
+    for (const ev of res.events) {
+      const tSec = Math.round((new Date(ev.tca) - START) / 1000);
+      const near = trueMinima.find(m => Math.abs(m.tSec - tSec) < 30);
+      assert.ok(near, `reported an approach at t+${tSec}s that brute force does not find`);
+      assert.ok(Math.abs(ev.missKm - near.d) < 0.5,
+        `reported ${ev.missKm} km at t+${tSec}s, brute force says ${near.d.toFixed(3)} km`);
+    }
+  });
+
+  check("a recurring pair carries its true approach count", () => {
+    assert.equal(res.events[0].approachesInWindow, trueMinima.length);
+    assert.equal(res.events[0].recurring, trueMinima.length > 1,
+      "a pair that approaches more than once must be flagged as recurring: it is a "
+      + "conversation about the orbit, not a series of independent avoidance decisions");
   });
 
   check("reported miss matches independent brute-force truth", () => {
@@ -172,8 +242,13 @@ test("screening", async () => {
   check("a genuine close approach is still reported", () => {
     // Same fixture as above but a real crossing: low miss, high relative
     // velocity. The attached filter keys on velocity, so this must survive.
+    //
+    // Counted against brute-force truth rather than a literal, because this
+    // pair legitimately approaches twice in the window and the point of the
+    // check is that the attached filter does not eat a real encounter — not
+    // how many real encounters there happen to be.
     const r = screenConjunctions(sats, "testco", WINDOW_SEC / 3600, threshold, { start: START });
-    assert.equal(r.events.length, 1);
+    assert.equal(r.events.length, trueMinima.length);
     assert.ok(r.events[0].relVelKmS > 1, `relVel ${r.events[0].relVelKmS} should be large`);
     assert.equal(r.attachedPairsExcluded, 0);
   });
@@ -209,7 +284,9 @@ test("screening", async () => {
     const r = screenConjunctions(sats, null, WINDOW_SEC / 3600, threshold,
       { start: START, primaryIds: [90001] });
     assert.equal(r.screened, 1, `expected 1 primary, got ${r.screened}`);
-    assert.equal(r.events.length, 1);
+    // Same encounters as the org-scoped screen: restricting the primaries
+    // changes who is screened, not how many times this pair actually passes.
+    assert.equal(r.events.length, trueMinima.length);
   });
 
   console.log("# ──────────────────────────────────────────────");

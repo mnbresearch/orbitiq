@@ -207,7 +207,26 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
   const steps = Math.floor(windowSec / coarseStep);
 
   const primaryIdSet = new Set(primaries.map(s => s.id));
-  const candidates = new Map(); // "idA|idB" -> {a,b,tSec,d2}
+
+  // `open` holds the approach currently in progress for each pair; `episodes`
+  // holds the ones that have finished. A pair may contribute several.
+  const open = new Map();       // "idA|idB" -> {a,b,tSec,d2,lastStep}
+  const episodes = [];          // finished approaches, one per close pass
+  const perPair = new Map();    // "idA|idB" -> how many approaches seen
+
+  // A pair in a shared shell can re-approach dozens of times in one window at
+  // essentially the same distance. Emitting every one would bury the isolated
+  // encounters that actually need a decision under a repeating geometry that
+  // needs a single conversation. So the deepest few are kept and the true
+  // count is carried on them, which is more useful to an operator than either
+  // one row or sixty.
+  const MAX_EPISODES_PER_PAIR = 8;
+
+  function closeEpisode(id, ep) {
+    perPair.set(id, (perPair.get(id) || 0) + 1);
+    episodes.push({ id, ...ep });
+    open.delete(id);
+  }
 
   const cell = coarseGate;
   const key = (x, y, z) =>
@@ -242,18 +261,61 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
           const d2 = dxk * dxk + dyk * dyk + dzk * dzk;
           if (d2 < coarseGate * coarseGate) {
             const id = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
-            const prev = candidates.get(id);
-            if (!prev || d2 < prev.d2) candidates.set(id, { a, b, tSec: i * coarseStep, d2 });
+
+            // ── One entry per APPROACH, not one per pair ──────────
+            //
+            // This used to keep only the closest sample per pair for the whole
+            // window, which quietly discarded every other approach they made.
+            // Verified against a 1 s brute-force scan: a test fixture whose
+            // pair passes inside the threshold twice reported one encounter,
+            // and the second — a real 14.5 km pass — was simply gone.
+            //
+            // That matters beyond the count. Each approach has its own time of
+            // closest approach and needs its own decision, and the evidence
+            // layer binds a decision to a specific warning row — so a dropped
+            // approach is an encounter with nothing to attach a decision to.
+            //
+            // A pair is inside the gate over a contiguous run of samples while
+            // it closes and opens again. A break in that run ends the episode.
+            const prev = open.get(id);
+            if (prev && i === prev.lastStep + 1) {
+              prev.lastStep = i;
+              if (d2 < prev.d2) { prev.d2 = d2; prev.tSec = i * coarseStep; }
+            } else {
+              if (prev) closeEpisode(id, prev);
+              open.set(id, { a, b, tSec: i * coarseStep, d2, lastStep: i });
+            }
           }
         }
       }
     }
   }
 
+  // Approaches still inside the gate when the window ended are real; a pair
+  // that is closing as the horizon arrives is exactly the one an operator
+  // most wants to hear about.
+  for (const [id, ep] of open) closeEpisode(id, ep);
+
+  // Keep the deepest few per pair, so a repeating geometry contributes its
+  // worst passes rather than all of them.
+  const byPair = new Map();
+  for (const ep of episodes) {
+    const list = byPair.get(ep.id) || [];
+    list.push(ep);
+    byPair.set(ep.id, list);
+  }
+  const candidates = [];
+  for (const [id, list] of byPair) {
+    list.sort((x, y) => x.d2 - y.d2);
+    for (const ep of list.slice(0, MAX_EPISODES_PER_PAIR)) {
+      candidates.push({ ...ep, approachesInWindow: list.length });
+    }
+  }
+
   // ── Refinement ──────────────────────────────────────────────
   const events = [];
   let attached = 0;
-  for (const c of candidates.values()) {
+  for (const c of candidates) {
     const { tSec, dKm } = refineTca(c.a.rec, c.b.rec, start, c.tSec, coarseStep);
     if (!(dKm <= thresholdKm)) continue;
 
@@ -275,10 +337,20 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
       altKm: +altKm.toFixed(0),
       risk: dKm < 1 ? "CRITICAL" : dKm < 3 ? "HIGH" : dKm < 6 ? "MODERATE" : "LOW",
       a: { id: c.a.id, name: c.a.name, org: c.a.org },
-      b: { id: c.b.id, name: c.b.name, org: c.b.org }
+      b: { id: c.b.id, name: c.b.name, org: c.b.org },
+      // How many times this pair came inside the gate across the window.
+      // Greater than one means a recurring geometry rather than an isolated
+      // event, which changes the response: a pair that will pass this close
+      // every orbit is a conversation about the orbit, not a series of
+      // independent avoidance decisions.
+      approachesInWindow: c.approachesInWindow,
+      recurring: c.approachesInWindow > 1
     });
   }
-  events.sort((x, y) => x.missKm - y.missKm);
+  // Closest first: the reader's first question is what the worst one was.
+  // Ties broken by time so a recurring pair's rows come out in a stable,
+  // chronological order rather than however the map happened to iterate.
+  events.sort((x, y) => (x.missKm - y.missKm) || (x.tca < y.tca ? -1 : 1));
 
   return {
     events: events.slice(0, 100),
@@ -295,6 +367,11 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
       coarseStepSec: coarseStep,
       coarseGateKm: +coarseGate.toFixed(1),
       completeToRelVelKmS: V_REL_MAX_KMS,
+      maxApproachesReportedPerPair: MAX_EPISODES_PER_PAIR,
+      approachNote: "Each separate close pass is reported, not only the deepest one: a pair "
+                  + "may approach several times in a window and each has its own time of "
+                  + "closest approach. Where a pair recurs more often than the cap, the "
+                  + "closest passes are reported and every row carries the true count.",
       note: `Complete for pairs closing at up to ${V_REL_MAX_KMS} km/s: the ${coarseGate.toFixed(0)} km gate cannot be crossed between ${coarseStep} s samples below that speed. TCA refined by golden-section minimisation to <0.05 s.`
     },
     generatedAt: new Date().toISOString()
