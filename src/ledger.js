@@ -33,20 +33,30 @@ const MAX_LINES = 200000; // rotate: keep the most recent events
 // do not claim cryptographic non-repudiation we cannot back.
 const GENESIS = "genesis";
 const HASH_LEN = 32;               // 128 bits of hex: ample for tamper-evidence
-const hashRow = (seq, prev, body) =>
+
+/**
+ * The row hash, exported deliberately.
+ *
+ * The entire proposition is that a third party can check this archive without
+ * trusting us, and they cannot do that without knowing exactly how a row hash
+ * is formed. Keeping the construction private would mean every independent
+ * verifier had to reverse-engineer it from the output — so it is public API,
+ * along with the canonical form and the body projection it depends on.
+ */
+export const hashRow = (seq, prev, body) =>
   crypto.createHash("sha256")
     .update(String(seq) + "|" + prev + "|" + canonical(body))
     .digest("hex").slice(0, HASH_LEN);
 
 /** Key-sorted JSON so the hash cannot change just because key order did. */
-function canonical(o) {
+export function canonical(o) {
   if (o === null || typeof o !== "object") return JSON.stringify(o);
   if (Array.isArray(o)) return "[" + o.map(canonical).join(",") + "]";
   return "{" + Object.keys(o).sort().map(k => JSON.stringify(k) + ":" + canonical(o[k])).join(",") + "}";
 }
 
 /** The chain fields are metadata, not payload — excluded from the body hash. */
-const bodyOf = ({ seq, prev, h, ...rest }) => rest;
+export const bodyOf = ({ seq, prev, h, ...rest }) => rest;
 
 function readJson(f, fallback) {
   try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return fallback; }
@@ -143,9 +153,36 @@ export function verify() {
     if (typeof r.seq !== "number" || !r.h) { unchained++; continue; }
     if (firstChainedIndex < 0) {
       firstChainedIndex = i;
-      // The chain may legitimately start mid-file on an archive that predates
-      // this feature; adopt the first chained row's own linkage as the start.
-      prev = r.prev; expectSeq = r.seq;
+      // ── Only trust a row about its own past when nothing else knows ──
+      //
+      // This used to adopt the first chained row's claimed linkage
+      // unconditionally, with the reasoning that an archive predating
+      // hash-chaining legitimately starts mid-file. True — but it also
+      // discarded the rotation anchor, and the anchor is the ONLY record of
+      // what was dropped.
+      //
+      // The effect was that after a rotation the oldest retained rows could be
+      // deleted and verification still returned ok: it simply re-based on
+      // whatever row now happened to be first. Head-truncation — quietly
+      // removing the earliest surviving warnings — was undetectable, which is
+      // precisely the attack the anchor was written to stop.
+      //
+      // So the row's own claim is adopted only when there is no anchor. With
+      // one, the retained window must continue from it or the archive is
+      // reported broken.
+      if (!anchor) { prev = r.prev; expectSeq = r.seq; }
+      else if (r.seq !== expectSeq || r.prev !== prev) {
+        return {
+          ok: false,
+          reason: "retained window does not continue from the rotation anchor",
+          atIndex: i, seq: r.seq, expectedSeq: expectSeq,
+          anchorSeq: anchor.seq, verified: checked, unchained, t: r.t,
+          means: "Rotation recorded that rows up to sequence " + anchor.seq + " were dropped, "
+               + "so the first retained row must be " + expectSeq + ". It is " + r.seq + ". "
+               + "Rows have been removed from the start of the retained window, or the anchor "
+               + "and the archive come from different histories."
+        };
+      }
     }
     if (r.seq !== expectSeq) {
       return { ok: false, reason: "sequence gap", atIndex: i, expectedSeq: expectSeq,
@@ -161,12 +198,49 @@ export function verify() {
     }
     prev = r.h; expectSeq = r.seq + 1; checked++;
   }
+  // ── Cross-check against the published seals ────────────────
+  //
+  // Everything above proves the retained rows are self-consistent. That is not
+  // the same as proving they are the rows that were there before, because a
+  // sufficiently determined edit can rewrite a row and every hash after it —
+  // the chain would then verify perfectly against itself.
+  //
+  // The seals are what close that. Each one records the tip sequence and hash
+  // at a moment, and is published hourly to a branch whose commit timestamps
+  // the repository owner cannot backdate. So any seal whose sequence still
+  // falls inside the retained window is an independent assertion about what
+  // that row's hash was, made before the edit could have happened.
+  //
+  // This is the check that makes "tamper-evident" mean something beyond
+  // "internally consistent".
+  const seals = readJson(SEALS_FILE, []);
+  const bySeq = new Map(all.filter(r => typeof r.seq === "number").map(r => [r.seq, r]));
+  for (const s of seals) {
+    const row = bySeq.get(s.seq);
+    if (!row) continue;                      // rotated out; the seal still stands, we just cannot check it here
+    if (row.h !== s.hash) {
+      return {
+        ok: false,
+        reason: "row contradicts a published seal",
+        seq: s.seq, sealedHash: s.hash, foundHash: row.h, sealedAt: s.at,
+        verified: checked, unchained,
+        means: "The archive is internally consistent but disagrees with a checkpoint published "
+             + "at " + s.at + ". A seal is recorded to an external branch whose commit times "
+             + "cannot be backdated, so this row was different at that moment. Rewriting a row "
+             + "and every hash after it produces a chain that verifies against itself; this is "
+             + "the check that does not."
+      };
+    }
+  }
+
   const t = tip();
   return {
     ok: true, verified: checked, unchained,
     chainStartsAt: firstChainedIndex >= 0 ? all[firstChainedIndex].seq : null,
     tipSeq: t ? t.seq : null, tipHash: t ? t.h : null,
     anchored: !!anchor,
+    sealsChecked: seals.filter(s => bySeq.has(s.seq)).length,
+    sealsOutsideWindow: seals.filter(s => !bySeq.has(s.seq)).length,
     note: unchained
       ? unchained + " row(s) predate hash-chaining and are reported as unchained rather than counted as verified."
       : "Every retained row links to the one before it."
