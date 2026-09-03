@@ -245,6 +245,95 @@ export function maxPc(missKm, hbrM = 20) {
   return Math.min(1, (R*R) / (Math.E * d*d));
 }
 
+// ============================================================
+// Probability dilution
+// ============================================================
+/**
+ * Which side of the probability maximum an encounter sits on.
+ *
+ * ── The trap ────────────────────────────────────────────────
+ * Pc is not monotonic in uncertainty. For a fixed geometry it rises as sigma
+ * grows, peaks, and then falls away again. Differentiating the 2D form gives
+ * the peak at
+ *
+ *     sigma* = d / sqrt(2)
+ *
+ * and the value there is R^2 / (e d^2) — which is exactly the isotropic bound
+ * maxPc() already computes. Past that peak, MORE uncertainty produces a LOWER
+ * probability. This is probability dilution, and it is the classic way a
+ * conjunction assessment reassures somebody about an encounter nobody
+ * actually understands.
+ *
+ * ── Why it matters here more than most places ───────────────
+ * This system screens from public element sets, so sigma is modelled and
+ * large — kilometres at epoch, tens of kilometres within days. Miss distances
+ * that matter are a few kilometres, so sigma* is on the order of 1-3 km while
+ * the actual sigma is often five to twenty times that. In other words this
+ * platform sits deep in the dilution region for a large share of what it
+ * screens, and a small Pc there is a statement about our ignorance rather
+ * than about the sky.
+ *
+ * That is the same failure direction as the covariance bug this system
+ * already shipped once: a number that says "safe" when it means "unknown".
+ * The difference is that this one cannot be fixed by a better model, because
+ * it is a property of the estimator and not an error in it. So it is measured
+ * and declared instead.
+ *
+ * ── What is deliberately NOT claimed ────────────────────────
+ * Not "better tracking would raise this probability". Shrinking sigma raises
+ * Pc only until sigma*, after which it falls again — a precisely known 3 km
+ * miss is a confident miss, with a genuinely tiny Pc. So the honest statement
+ * is bounded: with ideal knowledge FOR THIS GEOMETRY the probability could be
+ * as high as the peak value, and the reported figure does not distinguish a
+ * clean pass from an unresolved one.
+ */
+export const dilutionRegime = ratio =>
+  ratio >= 1.3 ? "dilution" : ratio <= 0.77 ? "resolved" : "near-peak";
+
+export function dilution({ missInPlaneKm, sigmaXKm, sigmaYKm, hbrM = 20, pc = null }) {
+  const d = Math.max(Number(missInPlaneKm) || 0, 1e-6);
+  // Equivalent circular sigma: the geometric mean preserves the area of the
+  // covariance ellipse, which is what sets the probability density scale.
+  const sigmaEff = Math.sqrt(Math.max(sigmaXKm, 1e-9) * Math.max(sigmaYKm, 1e-9));
+  const sigmaPeak = d / Math.SQRT2;
+  const ratio = sigmaEff / sigmaPeak;
+  const regime = dilutionRegime(ratio);
+  const peak = maxPc(d, hbrM);
+
+  // How far the reported probability sits below the most this geometry could
+  // ever produce. In the dilution region this is the number that matters:
+  // it is the size of the gap that uncertainty alone is responsible for.
+  const suppression = (pc != null && pc > 0 && peak > 0) ? peak / pc : null;
+
+  return {
+    regime,
+    sigmaEffectiveKm: +sigmaEff.toFixed(4),
+    sigmaAtPeakKm: +sigmaPeak.toFixed(4),
+    ratio: +ratio.toFixed(2),
+    pcAtPeak: peak,
+    suppressionFactor: suppression == null ? null : +suppression.toPrecision(3),
+    means: {
+      dilution:
+        "The position uncertainty is larger than the value that would maximise this "
+        + "probability, so the figure is being pushed DOWN by how little is known rather "
+        + "than by the encounter being benign. With ideal knowledge of this geometry the "
+        + "probability could be as high as the peak value shown. A low number here does "
+        + "not distinguish a clean pass from an unresolved one.",
+      "near-peak":
+        "The uncertainty is close to the value that maximises this probability, so the "
+        + "figure is near the most this geometry can produce. This is the regime in which "
+        + "the number is most informative.",
+      resolved:
+        "The uncertainty is small compared with the miss distance, so a low probability "
+        + "here reflects the geometry rather than a lack of information."
+    }[regime],
+    limits:
+      "Computed against an equivalent circular covariance, which is the form the peak has "
+      + "a closed solution for. The real covariance is elongated along track, so this is an "
+      + "indication of regime, not a precise threshold."
+  };
+}
+
 /** Operational banding used across the platform. */
 export function pcBand(pc) {
   if (pc >= 1e-3) return "CRITICAL";
@@ -317,6 +406,17 @@ export function assess(enc, opts = {}) {
     encounterPlane: {
       sigmaXKm: f.sigmaXKm, sigmaYKm: f.sigmaYKm, missInPlaneKm: f.missInPlaneKm
     },
+    // Which side of the probability peak this sits on. Reported on every
+    // assessment rather than only when it looks bad, because a reader who
+    // only sees the flag when it fires learns nothing about how often the
+    // regime applies — and here it applies most of the time.
+    dilution: dilution({
+      missInPlaneKm: f.missInPlaneKm,
+      sigmaXKm: f.sigmaXKm,
+      sigmaYKm: f.sigmaYKm,
+      hbrM,
+      pc: belowFloor ? PC_FLOOR : f.pc
+    }),
     covariance: { primary: covA, secondary: covB },
     hbrM,
     pcModel: PC_MODEL_VERSION,
