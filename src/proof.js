@@ -32,6 +32,7 @@ import crypto from "node:crypto";
 import * as ledger from "./ledger.js";
 import * as decisions from "./decisions.js";
 import * as compliance from "./compliance.js";
+import * as coverage from "./coverage.js";
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -94,6 +95,12 @@ export function build({ org = null, ws = null, since, until, thresholdPc = null,
     seals: seals.slice(-3),
     anchor,
     counts, summary, rows,
+    // Coverage sits beside the warnings deliberately. A list of what was found
+    // means little without a record of when anyone was looking, and a document
+    // that volunteers its own gaps is worth more than one that presents a
+    // round number — if a gap coincides with an incident, better it be
+    // disclosed here than discovered later.
+    coverage: coverage.summary({ org, since, until }),
     compliance: cov,
     reportDigest: digest
   };
@@ -230,6 +237,30 @@ ${d.summary.unansweredAboveThreshold ? `<div class="note">
   <b>${esc(d.summary.unansweredAboveThreshold)} warning(s) above threshold have no decision recorded in this system.</b>
   ${esc(d.summary.unansweredNote || "")}</div>` : ""}
 
+<h2>Screening coverage over this period</h2>
+<div class="verify">
+  <div>${esc(d.coverage.sweepsRecorded)} screening pass(es) recorded between
+       ${esc(fmtT(d.coverage.windowFrom))} and ${esc(fmtT(d.coverage.windowTo))}${
+    d.coverage.medianCatalogueAgeDays != null
+      ? `, against element sets with a median age of ${esc(d.coverage.medianCatalogueAgeDays)} days`
+      : ""}.</div>
+  ${d.coverage.continuous
+    ? `<div class="ok" style="margin-top:8px"><b>No gaps.</b> Screening ran at least every
+       ${esc(d.coverage.expectedIntervalHours)} hours across the whole period.</div>`
+    : d.coverage.gaps.length
+      ? `<div class="note warn" style="margin-top:8px"><b>${esc(d.coverage.gaps.length)} gap(s)
+         in coverage, totalling ${esc(d.coverage.gapHours)} hours</b>
+         (${esc(Math.round((d.coverage.coveredFraction ?? 0) * 1000) / 10)}% of the period covered):
+         <ul style="margin:6px 0 0 18px">${d.coverage.gaps.slice(0, 12).map(g =>
+           `<li>${esc(fmtT(g.from))} to ${esc(fmtT(g.to))} &mdash; ${esc(g.hours)} h</li>`).join("")}
+         </ul>${d.coverage.gaps.length > 12
+           ? `<div class="dim">and ${esc(d.coverage.gaps.length - 12)} more.</div>` : ""}</div>`
+      : `<div class="note warn" style="margin-top:8px">No screening passes are recorded for this
+         period.</div>`}
+  <div class="dim" style="margin-top:10px">${esc(d.coverage.means)}</div>
+  <div class="dim" style="margin-top:6px">${esc(d.coverage.limits)}</div>
+</div>
+
 <h2>What this archive can and cannot evidence</h2>
 ${covHtml}
 <div class="note warn">${esc(d.compliance.limits)}</div>
@@ -271,7 +302,11 @@ ${covHtml}
   <b>What it does not establish.</b> Compliance with any regulation, the correctness of any decision, or that
   no action was taken where no record appears — a decision taken outside this system leaves no trace in it.
   Probabilities are computed from public element sets, which carry no covariance; the covariance is modelled
-  and every row states which model produced it.<br><br>
+  and every row states which model produced it. Where a calibration is in force that model is widened to match
+  how far apart successive published element sets for that class of object actually are &mdash; a measurement
+  that can only widen the covariance and never narrow it, because two element sets from the same sensor network
+  agree with each other better than either agrees with the truth. The method is public and needs no account:
+  <code>https://orbit.mnbresearch.com/api/v1/calibration</code>.<br><br>
   OrbitIQ · MNB Research · generated ${fmtT(d.generatedAt)} · digest ${esc(d.reportDigest)}
 </footer>
 </div></body></html>`;

@@ -14,6 +14,16 @@ import { getSatellites, getLaunches, getEvents, orgList, dataSourceInfo } from "
 import { screenConjunctions } from "./src/conjunctions.js";
 import { hohmann, launchPlan, congestion, detectManeuvers, LAUNCH_SITES } from "./src/astro.js";
 import * as intel from "./src/intel.js";
+import * as coverage from "./src/coverage.js";
+import { elementAgeDays } from "./src/orbitstate.js";
+
+// How stale the elements a sweep ran against were. A pass over a four-day-old
+// catalogue is weaker evidence than one over fresh elements, and the coverage
+// record should carry that difference rather than leave a reader to assume it.
+function medianElementAgeDays(sats) {
+  const ages = sats.map(s => elementAgeDays(s?.gp)).filter(Number.isFinite).sort((a, b) => a - b);
+  return ages.length ? +ages[ages.length >> 1].toFixed(2) : null;
+}
 import * as ledger from "./src/ledger.js";
 import * as store from "./src/store.js";
 import * as netops from "./src/netops.js";
@@ -25,6 +35,9 @@ import * as watch from "./src/watch.js";
 import * as pcmod from "./src/pc.js";
 import * as trend from "./src/trend.js";
 import { getSpaceWeather, environmentForLedger } from "./src/spaceweather.js";
+// ── evidence layer ──
+// The archive records what we saw; these record and export what the operator
+// did about it. That second half is the part a competitor cannot backfill.
 import { mountEvidenceRoutes } from "./src/evidenceroutes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1682,6 +1695,25 @@ async function intelligenceSweep() {
       ageDaysA: ev.ageDaysA, ageDaysB: ev.ageDaysB
     }));
     ledger.append("conjunction", events);
+
+    // Record that the sweep RAN, not only what it found.
+    //
+    // Without this, a month with no warnings and a month with a broken
+    // screening job look identical in the archive — and at claim time an
+    // adjuster will read the silence the second way. The row is what lets a
+    // reader tell them apart, so it is written on every pass including the
+    // ones that find nothing, which are precisely the passes it exists for.
+    coverage.record({
+      org: null,
+      source: "server-sweep",
+      objectsScreened: sats.length,
+      windowHours: 3,
+      thresholdKm: 10,
+      catalogueEpochAgeDays: medianElementAgeDays(sats),
+      eventsFound: events.length,
+      durationMs: d.ms ?? null
+    });
+
     // 2. maneuvers + anomalies
     const hist = store.loadHistory();
     ledger.append("maneuver", detectManeuvers(sats, hist).map(m => ({

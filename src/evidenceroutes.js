@@ -18,6 +18,8 @@ import * as burnscreen from "./burnscreen.js";
 import * as proof from "./proof.js";
 import * as audit from "./audit.js";
 import { mountVerifierRoutes } from "./verifierroutes.js";
+import * as calibration from "./calibration.js";
+import * as pcmod from "./pc.js";
 
 export function mountEvidenceRoutes(api, { requireWs, requirePlan, fleet, ledger, getSatellites }) {
 
@@ -33,6 +35,55 @@ export function mountEvidenceRoutes(api, { requireWs, requirePlan, fleet, ledger
   // we saw; these routes record and export what the operator DID about it, which
   // is the half nobody can reconstruct after the fact and the half an underwriter
   // or regulator actually asks for.
+
+  /**
+   * How the covariance behind every probability was arrived at.
+   *
+   * Public, deliberately. This is the methodology, not the data: it says how
+   * sigma is chosen and what was measured to check it. A reviewer at an
+   * insurer should be able to read it before signing anything, and putting it
+   * behind a login would make the one number this product is judged on the
+   * one number nobody can inspect.
+   */
+  api.get("/calibration", (req, res) => {
+    const c = calibration.current();
+    res.json({
+      status: calibration.status(),
+      model: {
+        version: pcmod.PC_MODEL_VERSION,
+        basis: "Published SGP4/TLE error characterisations: a few km at epoch, in-track "
+             + "dominant and growing fastest, radial nearly flat across a week. Taken at the "
+             + "pessimistic end of the published range, because an over-wide covariance costs "
+             + "an operator an unnecessary look while an over-tight one costs them the "
+             + "conjunction.",
+        probabilityFloor: pcmod.PC_FLOOR,
+        floorMeans: "Below this a probability computed from a modelled covariance describes the "
+                  + "assumption rather than the sky, so it is published as '< 1e-8' rather than "
+                  + "with digits that would be false precision."
+      },
+      measurement: c
+        ? {
+            version: c.version,
+            generatedAt: c.generatedAt,
+            snapshots: c.snapshots,
+            spanDays: c.snapshotSpanDays,
+            objectsWithMultipleElementSets: c.objectsWithMultipleElementSets,
+            pairsUsable: c.pairsUsable,
+            byKind: c.byKind,
+            method: c.method,
+            limits: c.limits,
+            usage: c.usage
+          }
+        : { applied: false,
+            means: "No calibration is currently applied, so probabilities use the modelled "
+                 + "covariance alone. This is the documented default." },
+      direction:
+        "A measurement can only widen the covariance used, never narrow it. Two element sets "
+        + "from the same sensor network agree with each other better than either agrees with "
+        + "the truth, so a small measured spread is not evidence of a small error — but a large "
+        + "one is proof the model was too confident."
+    });
+  });
 
   /** The decision vocabulary, so a client can render a picker without hardcoding. */
   api.get("/decisions/catalogue", (req, res) => res.json({ decisions: decisions.catalogue() }));

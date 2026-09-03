@@ -7,6 +7,7 @@ import * as satellite from "satellite.js";
 
 import { EARTH_R_KM as RE, MU_KM3_S2 as MU } from "./constants.js";
 import * as pcmod from "./pc.js";
+import * as calibration from "./calibration.js";
 import { elementAgeDays, kindOf, stateAt } from "./orbitstate.js";
 const C_KM_S = 299792.458;
 
@@ -94,7 +95,8 @@ export function augmentConjunctions(events, satsById, hbrM = 20) {
       const ageA = elementAgeDays(a.gp), ageB = elementAgeDays(b.gp);
       const f = pcmod.assess(
         { rA: sa.r, vA: sa.v, rB: sb.r, vB: sb.v },
-        { ageDaysA: ageA, ageDaysB: ageB, kindA: kindOf(a), kindB: kindOf(b), hbrM }
+        { ageDaysA: ageA, ageDaysB: ageB, kindA: kindOf(a), kindB: kindOf(b), hbrM,
+          calibration: calibration.current() }
       );
       return {
         ...ev,
@@ -102,6 +104,8 @@ export function augmentConjunctions(events, satsById, hbrM = 20) {
         pcText: f.pcText || fmtPcText(f.pc),
         pcBand: f.pcBand,
         pcMaxIsotropic: f.pcMaxIsotropic,
+        pcCalibration: f.pcCalibration,
+        pcFloorApplied: f.pcFloorApplied,
         // Stamp the covariance model. The archive is append-only and already
         // holds rows written under cov-v1, whose radial/cross-track sigma was
         // ~5x too tight and drove Pc down by tens of orders of magnitude. A
