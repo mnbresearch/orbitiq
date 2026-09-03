@@ -19,6 +19,7 @@ import * as proof from "./proof.js";
 import * as audit from "./audit.js";
 import { mountVerifierRoutes } from "./verifierroutes.js";
 import * as calibration from "./calibration.js";
+import * as witness from "./witness.js";
 import * as pcmod from "./pc.js";
 
 export function mountEvidenceRoutes(api, { requireWs, requirePlan, fleet, ledger, getSatellites }) {
@@ -83,6 +84,40 @@ export function mountEvidenceRoutes(api, { requireWs, requirePlan, fleet, ledger
         + "the truth, so a small measured spread is not evidence of a small error — but a large "
         + "one is proof the model was too confident."
     });
+  });
+
+  /**
+   * Check the archive against the external witness log.
+   *
+   * Public, and deliberately the one check that is. Everything else this
+   * system says about its own integrity is computed over files it holds:
+   * the chain is ours, and the seal file is ours too, so a thorough rewrite
+   * would take both together. The witness log is written by a process outside
+   * the service, against GitHub Actions runs whose logs the repository owner
+   * cannot edit afterwards.
+   *
+   * That makes this the strongest negative signal the platform can produce
+   * about itself — which is exactly why it should not require an account to
+   * read. A verification anyone can run only if we let them is not much of a
+   * verification.
+   *
+   * It reaches the network, so it is bounded and never throws: an unreachable
+   * witness log is an absence of corroboration, not evidence of tampering,
+   * and the response says so rather than failing in a way a reader might
+   * mistake for an alarm.
+   */
+  api.get("/archive/witness-check", async (req, res) => {
+    try {
+      res.json(await witness.check({ timeoutMs: 8000 }));
+    } catch (e) {
+      res.status(200).json({
+        ok: null,
+        error: e.message,
+        summary: "the witness check could not run",
+        means: "This says nothing about the archive either way. The log lives outside this "
+             + "service by design, so it can be unavailable while the archive is intact."
+      });
+    }
   });
 
   /** The decision vocabulary, so a client can render a picker without hardcoding. */
