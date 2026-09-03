@@ -20,6 +20,7 @@
 // before they can check a document, which defeats the entire point.
 // ============================================================
 import * as grants from "./grants.js";
+import * as coverage from "./coverage.js";
 
 /**
  * Pull a grant token from a header. Headers ONLY.
@@ -209,6 +210,23 @@ export function mountVerifierRoutes(api, { requireWs, requirePlan, ledger, decis
     });
     if (out.error) return res.status(400).json(out);
     res.json(out);
+  });
+
+  /**
+   * Was anyone watching?
+   *
+   * The question a warning list cannot answer. Under the conjunctions scope
+   * because it is the same evidence seen from the other side: the warnings say
+   * what was found, this says when anyone was looking, and a reader given only
+   * the first can read a quiet month either way.
+   */
+  api.get("/verify/coverage", requireGrant("conjunctions"), (req, res) => {
+    const g = req.grant;
+    res.json(coverage.summary({
+      org: g.org || null,
+      since: req.query.since || g.windowFrom || new Date(Date.now() - 90 * 86400000).toISOString(),
+      until: req.query.until || g.windowTo || new Date().toISOString()
+    }));
   });
 
   /** Everything this verifier currently holds access to, across operators. */
