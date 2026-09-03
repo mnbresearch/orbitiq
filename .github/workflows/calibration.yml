@@ -1,0 +1,142 @@
+# ============================================================
+# Covariance calibration.
+#
+# Every collision probability this system publishes depends on a covariance,
+# and TLEs do not carry one — so it is modelled. This job checks the model
+# against reality by measuring how far apart successive element sets for the
+# same object actually are.
+#
+# ── Why this job keeps its own history ──────────────────────
+# The data mirror is force-pushed flat: yesterday's catalogue is gone the
+# moment today's lands, and CelesTrak serves current elements, not an archive.
+# So a calibration is impossible without somewhere to keep past snapshots, and
+# this branch is that somewhere.
+#
+# That makes the snapshots the most valuable thing in the repository. Element
+# sets are free today; a record of what they SAID on a past day cannot be
+# fetched later at any price. Every day this runs, the window of measurable
+# lags gets one day deeper, and no amount of engineering catches that up.
+#
+# ── Order of operations matters ─────────────────────────────
+# The prior snapshots are checked out FIRST, into prior/. If that checkout
+# fails the job must fail, not quietly proceed with an empty history — a run
+# with no prior would compute nothing, publish `usable: false`, and force-push
+# a branch containing a single snapshot, destroying the accumulated history.
+# That is the one irreversible failure available here, so it is guarded.
+#
+# Cost: nothing. Public repository, standard runner.
+# ============================================================
+name: Calibration
+
+on:
+  schedule:
+    # Daily, well clear of the mirror (:23) and screening (:37) so it reads a
+    # catalogue that has already landed. Daily rather than hourly because the
+    # measurement is of day-scale drift; running it more often would just
+    # re-measure the same element sets.
+    - cron: "51 4 * * *"
+  workflow_dispatch:
+    inputs:
+      reset_history:
+        description: "Discard accumulated snapshots and start over (destroys history)"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "src/covcal.js"
+      - "scripts/calibrate.mjs"
+      - ".github/workflows/calibration.yml"
+
+concurrency:
+  group: orbitiq-calibration
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  calibrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund --omit=dev
+
+      - name: Check out accumulated snapshots
+        id: prior
+        run: |
+          mkdir -p prior/snapshots
+          if [ "${{ inputs.reset_history }}" = "true" ]; then
+            echo "::warning::reset_history requested — starting from an empty history"
+            echo "had=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git ls-remote --exit-code --heads origin calibration >/dev/null 2>&1; then
+            git fetch origin calibration --depth=1
+            git --work-tree=prior checkout origin/calibration -- data/calibration/snapshots 2>/dev/null || true
+            # git checkout of a subtree lands it at prior/data/calibration/snapshots
+            if [ -d prior/data/calibration/snapshots ]; then
+              mv prior/data/calibration/snapshots/* prior/snapshots/ 2>/dev/null || true
+            fi
+            n=$(ls prior/snapshots/*.json 2>/dev/null | wc -l | tr -d ' ')
+            echo "recovered $n prior snapshot(s)"
+            # The branch exists but yielded nothing: that is a layout change or
+            # a broken fetch, and continuing would force-push over real history.
+            if [ "$n" = "0" ]; then
+              echo "::error::calibration branch exists but no snapshots were recovered; refusing to overwrite it"
+              exit 1
+            fi
+            echo "had=$n" >> "$GITHUB_OUTPUT"
+          else
+            echo "no calibration branch yet — first run"
+            echo "had=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Measure
+        env:
+          CALIBRATION_PRIOR: prior/snapshots
+          CALIBRATION_MODULO: "5"
+        run: node scripts/calibrate.mjs
+
+      - name: Refuse to publish a run that lost history
+        env:
+          HAD: ${{ steps.prior.outputs.had }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys, glob
+          had = int(os.environ.get("HAD") or 0)
+          now = len(glob.glob("out/data/calibration/snapshots/*.json"))
+          cal = json.load(open("out/data/calibration/index.json"))
+          print(f"snapshots: had {had}, publishing {now}; usable={cal.get('usable')} "
+                f"pairs={cal.get('pairsUsable')}")
+          # Retention caps at 14, so a drop below the previous count that is not
+          # explained by the cap means snapshots were lost.
+          if had and now < min(had + 1, 14):
+              print(f"::error::about to publish {now} snapshots having started with {had}; "
+                    "force-pushing this would destroy accumulated history")
+              sys.exit(1)
+          if not cal.get("usable"):
+              print(f"::warning::calibration not usable: {cal.get('notUsableBecause')}")
+          EOF
+
+      - name: Publish
+        run: |
+          cd out
+          git init -b calibration
+          git config user.name "orbitiq-calibration"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "calibration $(date -u +%FT%TZ)"
+          # Flat history: this branch is a rolling data artefact. The snapshots
+          # inside it are carried forward by the checkout step above, which is
+          # why the guard before this step exists.
+          git push --force \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
+            calibration
