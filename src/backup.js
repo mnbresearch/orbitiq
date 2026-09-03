@@ -17,7 +17,21 @@ import crypto from "crypto";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, "..", "data");
+
+// ── This must agree with everyone else, and once it did not ──
+// ledger.js, store.js and auth.js all resolve ORBITIQ_DATA_DIR first. This
+// module hardcoded the repository's data/ directory, which is the same place
+// only for as long as nobody sets the variable.
+//
+// Setting it is exactly what mounting a persistent disk looks like, and that
+// is the recommended next step off the free tier. Had anyone taken it, the
+// live archive would have moved while the backup went on faithfully saving
+// the old, empty directory — and the failure would have stayed invisible
+// until the day the backup was actually needed.
+const DATA_DIR = process.env.ORBITIQ_DATA_DIR || path.join(__dirname, "..", "data");
+
+/** Exposed so a test can assert this module and the stores agree. */
+export const dataDir = () => DATA_DIR;
 
 // ---------- encryption for secret-bearing archives ----------
 // AES-256-GCM: the tag makes tampering detectable, not just unreadable.
@@ -76,7 +90,51 @@ const FILES = [
 ];
 
 let state = { enabled: !!TOKEN, restored: 0, lastBackupAt: null, lastError: null };
-export const status = () => ({ ...state });
+
+/**
+ * Backup health, stated as a verdict rather than left to be inferred.
+ *
+ * A backup that has quietly stopped working looks exactly like one that is
+ * working, right up until it is needed. That is the whole failure mode: the
+ * operator believes they are protected, and nobody finds out otherwise until
+ * the disk is already gone.
+ *
+ * So the states below are deliberately blunt, and "refusing" is reported as
+ * loudly as "failing". A refusal is the guard doing its job, but it also means
+ * the live archive is diverging from the backed-up one and somebody needs to
+ * look — silence there would turn a safety mechanism into a slow leak.
+ */
+export const status = () => {
+  const ageMin = state.lastBackupAt
+    ? (Date.now() - new Date(state.lastBackupAt).getTime()) / 60000 : null;
+  const refusing = /^backup REFUSED/.test(state.lastError || "");
+
+  const health = !TOKEN ? "unprotected"
+    : refusing ? "refusing"
+    : state.lastError ? "failing"
+    : !state.lastBackupAt ? "never-run"
+    : ageMin > 360 ? "stale"
+    : "ok";
+
+  return {
+    ...state,
+    health,
+    lastBackupAgeMinutes: ageMin == null ? null : Math.round(ageMin),
+    means: {
+      unprotected: "No backup token is configured. The archive exists only on this instance's "
+                 + "disk, which is wiped on every redeploy. Everything this product claims "
+                 + "rests on that one file.",
+      refusing: "The backup is refusing to publish because the local archive is smaller than "
+              + "the backed-up one. That guard prevents a blank boot from destroying the "
+              + "record, but it also means the two have diverged and someone must look.",
+      failing: "The last backup attempt failed. The archive is still on disk, but a redeploy "
+             + "before this is fixed would lose everything written since the last success.",
+      "never-run": "No backup has completed since this instance started.",
+      stale: "The last successful backup is more than six hours old.",
+      ok: "The archive is being persisted off this instance."
+    }[health]
+  };
+};
 
 async function gh(pathname, opts = {}) {
   return fetch(API + pathname, {
@@ -144,10 +202,60 @@ export async function restore() {
 }
 
 // ---------- backup (after every intelligence sweep) ----------
+/**
+ * Lines in the ledger currently held on the backup branch, or null if there
+ * is none. Used for the append-only guard below.
+ */
+async function remoteLedgerLines() {
+  try {
+    const r = await gh(`/contents/backup/ledger.jsonl?ref=${BRANCH}`, {
+      headers: { Accept: "application/vnd.github.raw" }
+    });
+    if (!r.ok) return null;
+    return (await r.text()).split("\n").filter(Boolean).length;
+  } catch { return null; }
+}
+
 export async function backup() {
   if (!TOKEN) return state;
   try {
     await ensureBranch();
+
+    // ── The archive is append-only, so it must never shrink ──
+    //
+    // The scenario this exists for needs nothing unusual to go wrong. GitHub
+    // is briefly unreachable at boot, so restore() quietly recovers nothing.
+    // The service comes up on an empty disk and starts screening. Three rows
+    // later the sweep finishes, calls backup(), and force-pushes a three-line
+    // ledger over the real one. The record is gone, there is no parent commit
+    // to recover it from, and nothing anywhere said a word.
+    //
+    // A ledger that is shorter than the one already backed up is therefore
+    // never a legitimate update. Refusing the WHOLE backup rather than just
+    // that one file matters too: the store and auth files from a blank boot
+    // are equally empty, and publishing those would drop every workspace key
+    // and user account.
+    //
+    // Deliberately not overridable by an environment variable. The only
+    // legitimate reason to shrink the ledger is a decision someone should
+    // make deliberately, with the branch in front of them, not one a
+    // half-remembered setting makes for them at three in the morning.
+    const localLedger = (() => {
+      try {
+        return fs.readFileSync(path.join(DATA_DIR, "ledger.jsonl"), "utf8")
+          .split("\n").filter(Boolean).length;
+      } catch { return null; }
+    })();
+    const remote = await remoteLedgerLines();
+    if (remote !== null && localLedger !== null && localLedger < remote) {
+      state.lastError =
+        `backup REFUSED: the local ledger has ${localLedger} rows but the backup holds `
+        + `${remote}. An append-only archive does not shrink, so this is a boot that failed `
+        + `to restore, a wrong data directory, or a truncated file — and publishing it would `
+        + `destroy the record permanently. Nothing was written.`;
+      console.error(state.lastError);
+      return state;
+    }
     const entries = [];
     for (const f of FILES) {
       let text;
@@ -172,9 +280,29 @@ export async function backup() {
       entries.push({ path: f.remote, mode: "100644", type: "blob", sha: blob.sha });
     }
     if (!entries.length) return state;
+
+    // ── Never publish a tree that drops what is already there ──
+    //
+    // This commit is parentless and force-pushed, so the tree it names IS the
+    // whole branch. Building that tree from only the files readable on this
+    // run therefore DELETED any file that happened to be unreadable — and the
+    // one file this product entirely consists of is in that set.
+    //
+    // A partial write, a permissions blip, a moment of disk pressure: any of
+    // them, on any sweep, and the archive quietly vanished from the backup.
+    // Starting from the current tree means a missing local file leaves the
+    // remote copy alone, which is the only safe direction for a backup to
+    // fail in.
+    let baseTree = null;
+    try {
+      const ref = await ghJson(`/git/ref/heads/${BRANCH}`);
+      const head = await ghJson(`/git/commits/${ref.object.sha}`);
+      baseTree = head.tree?.sha || null;
+    } catch { /* first ever backup: there is nothing to preserve */ }
+
     const tree = await ghJson(`/git/trees`, {
       method: "POST",
-      body: JSON.stringify({ tree: entries })
+      body: JSON.stringify(baseTree ? { base_tree: baseTree, tree: entries } : { tree: entries })
     });
     // parentless commit + force ref update keeps the branch history flat,
     // so the repo never bloats no matter how long the platform runs
