@@ -21,6 +21,37 @@
 // ============================================================
 import * as satellite from "satellite.js";
 
+// ── Vector helpers and the RIC basis ──────────────────────
+//
+// These were in pc.js, which is where they are mostly used. They moved here
+// when covcal.js also needed the RIC basis: covcal measures residuals in RIC,
+// pc.js turns covariances in RIC into probabilities, and pc.js consuming
+// covcal's result would have made the import cycle pc -> covcal -> pc.
+//
+// The alternative was a second copy of ricBasis in covcal. That is exactly
+// the mistake this file was created to undo — two copies of an astrodynamics
+// helper, one of which quietly drifts — so the shared thing moved to the
+// shared place instead.
+export const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
+export const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
+export const cross = (a, b) => ({
+  x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x
+});
+export const norm = a => Math.sqrt(dot(a, a));
+export const unit = a => { const n = norm(a); return n > 0 ? { x: a.x / n, y: a.y / n, z: a.z / n } : { x: 0, y: 0, z: 0 }; };
+
+/**
+ * RIC (radial / in-track / cross-track) basis of the primary object.
+ * R̂ along the position vector, Ĉ along orbital angular momentum,
+ * Î completes the right-handed set (≈ velocity direction).
+ */
+export function ricBasis(r, v) {
+  const R = unit(r);
+  const C = unit(cross(r, v));
+  const I = cross(C, R);          // already unit: C ⟂ R
+  return { R, I, C };
+}
+
 /**
  * Age of a TLE/GP element set, in days.
  *
