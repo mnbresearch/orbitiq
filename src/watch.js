@@ -13,6 +13,7 @@
 import * as satellite from "satellite.js";
 import * as fleet from "./fleet.js";
 import * as pcmod from "./pc.js";
+import * as calibration from "./calibration.js";
 import * as mailer from "./mailer.js";
 
 import { EARTH_R_KM as EARTH_R } from "./constants.js";
@@ -42,7 +43,8 @@ export function assessEvent(ev, satsById, hbrM) {
   const ageA = elementAgeDays(A.gp), ageB = elementAgeDays(B.gp);
   const a = pcmod.assess(
     { rA: sa.r, vA: sa.v, rB: sb.r, vB: sb.v },
-    { ageDaysA: ageA, ageDaysB: ageB, kindA: kindOf(A), kindB: kindOf(B), hbrM }
+    { ageDaysA: ageA, ageDaysB: ageB, kindA: kindOf(A), kindB: kindOf(B), hbrM,
+      calibration: calibration.current() }
   );
   return {
     ...a,
