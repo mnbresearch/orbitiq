@@ -44,6 +44,7 @@
 // ============================================================
 import crypto from "node:crypto";
 import * as ledger from "./ledger.js";
+import * as audit from "./audit.js";
 
 /**
  * Longest a single grant may run before it must be renewed.
@@ -218,10 +219,59 @@ export function portfolioFor(verifierName) {
  * It deliberately does NOT say "the operator is trustworthy". It says whether
  * two hashes agree.
  */
+/**
+ * Find the archived record of this system producing a given digest.
+ *
+ * ── Why this exists ─────────────────────────────────────────
+ * A digest is only reproducible over the same window and threshold. Those are
+ * printed on the document, but requiring a verifier to retype them exactly
+ * before the check works is a trap: the failure mode is a GENUINE document
+ * reading as forged, which is the worst possible direction for this product to
+ * be wrong in.
+ *
+ * Every report generation is already audited into the same hash chain, with
+ * the window and threshold that produced it — so the parameters can be
+ * recovered from the archive instead of from the reader's typing.
+ *
+ * ── Why this is not circular ────────────────────────────────
+ * The operator could generate many reports and hand over a flattering one.
+ * That is exactly why the count is returned alongside: every generation is in
+ * the chain, so cherry-picking is visible rather than hidden. Recovering the
+ * parameters does not ask the verifier to trust the operator — it moves one
+ * more thing out of the operator's hands and into the witnessed record.
+ */
+export function findIssuance({ ws = null, org = null, digest }) {
+  if (!digest) return null;
+  const history = audit.reportHistory({ ws, org, limit: 1000 });
+  const hit = history.find(a => a.detail && a.detail.digest === String(digest));
+  if (!hit) return { found: false, issuancesInArchive: history.length };
+  const [from, to] = String(hit.detail.window || "..").split("..");
+  return {
+    found: true,
+    issuancesInArchive: history.length,
+    ledgerSeq: hit.seq,
+    ledgerHash: hit.hash,
+    generatedAt: hit.t,
+    generatedBy: hit.actor || null,
+    window: { from: from || null, to: to || null },
+    thresholdPc: hit.detail.thresholdPc ?? null,
+    rowCount: hit.detail.rowCount ?? null
+  };
+}
+
 export function verifyReport({ grant, claimedDigest, since = null, until = null, thresholdPc = null }) {
   const org = grant.org || null;
-  const from = since || grant.windowFrom || null;
-  const to = until || grant.windowTo || null;
+
+  // Parameters, in order of authority: what the verifier explicitly asked for,
+  // then what the archive says produced this digest, then the grant's own
+  // window. The middle step is what makes a genuine document verify on the
+  // first click instead of after three attempts at retyping a date range.
+  const issuance = findIssuance({ ws: grant.ws, digest: claimedDigest });
+  const recovered = issuance && issuance.found && since == null && until == null && thresholdPc == null;
+
+  const from = since || (recovered ? issuance.window.from : null) || grant.windowFrom || null;
+  const to = until || (recovered ? issuance.window.to : null) || grant.windowTo || null;
+  if (recovered && thresholdPc == null) thresholdPc = issuance.thresholdPc;
 
   const conj = (ledger.query({ type: "conjunction", org, since: from, until: to, limit: 5000 }).events || []);
   const above = thresholdPc == null
@@ -259,6 +309,40 @@ export function verifyReport({ grant, claimedDigest, since = null, until = null,
     window: { from, to },
     thresholdPc: thresholdPc == null ? null : Number(thresholdPc),
     chain: { ok: chain.ok, tipSeq: chain.tipSeq, tipHash: chain.tipHash, verified: chain.verified },
+
+    // Where the parameters came from. A verifier should be able to tell the
+    // difference between "the archive told me the window" and "I typed the
+    // window in myself", because only the first is evidence.
+    parameterSource: recovered ? "recovered-from-archive"
+                   : (since || until || thresholdPc != null) ? "supplied-by-verifier"
+                   : "grant-window",
+    issuance: !claimedDigest ? null
+      : issuance && issuance.found ? {
+          found: true,
+          generatedAt: issuance.generatedAt,
+          generatedBy: issuance.generatedBy,
+          ledgerSeq: issuance.ledgerSeq,
+          ledgerHash: issuance.ledgerHash,
+          window: issuance.window,
+          thresholdPc: issuance.thresholdPc,
+          rowCount: issuance.rowCount,
+          reportsGeneratedInArchive: issuance.issuancesInArchive,
+          means: "The archive contains its own hash-chained record of producing this digest, at "
+               + "the stated time and over the stated window. The parameters used below were taken "
+               + "from that record rather than from the document, so a genuine document verifies "
+               + "without anyone retyping a date range. "
+               + `${issuance.issuancesInArchive} report generation(s) are recorded for this operator `
+               + "in total — every one is in the chain, so choosing a flattering window is visible "
+               + "rather than hidden."
+        }
+      : {
+          found: false,
+          reportsGeneratedInArchive: issuance ? issuance.issuancesInArchive : 0,
+          means: "No record of this system producing that digest appears in the archive for this "
+               + "operator. The ordinary explanation is a document generated before this record "
+               + "was kept, or by a different tool. It is also what an invented digest would look "
+               + "like. The check below used the window supplied, or the grant's own window."
+        },
     means: claimedDigest
       ? (recomputed === String(claimedDigest)
           ? "The document describes exactly these archived rows, and the chain over them verifies. "
