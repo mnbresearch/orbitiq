@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Evidence — OrbitIQ</title>
+<meta name="robots" content="noindex">
+<!--
+  ============================================================
+  The evidence console.
+
+  ── Why this page has to exist ──────────────────────────────
+  The decision log is the keystone of the whole commercial argument: a record
+  of what the operator DID is the half nobody can reconstruct later. But it
+  only has that value if it actually gets filled in, and until this page the
+  only way to record a decision was a POST from the command line.
+
+  An operator on console at 02:00 with a conjunction at T-6h is not going to
+  reach for curl. If recording a decision is harder than not recording one,
+  the archive stays empty, the reports have nothing in them, and the strategy
+  fails quietly — not because the idea was wrong but because the interface was.
+
+  ── The design constraint that shaped it ────────────────────
+  Recording a decision has to be faster than skipping it. That means: the
+  warnings are already on screen, the decision is two clicks, and the fields
+  that a reviewer will later care about (rationale, threshold, burn size) are
+  demanded only where they genuinely matter — not on every row, or people
+  learn to paste "n/a" into everything, which is worse than a blank.
+  ============================================================
+-->
+<style>
+  :root{
+    --bg:#070c14; --panel:#0e1622; --line:rgba(120,160,220,.16);
+    --ink:#e8f0fa; --dim:#8ba3c2; --accent:#3ec9ff;
+    --ok:#66e29a; --warn:#fbbf24; --bad:#fca5a5;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+  a{color:var(--accent)}
+  .top{position:sticky;top:0;z-index:20;background:rgba(7,12,20,.92);backdrop-filter:blur(8px);
+       border-bottom:1px solid var(--line);padding:14px 24px;display:flex;align-items:center;gap:18px}
+  .brand{font-weight:700;letter-spacing:-.01em}
+  .brand span{color:var(--accent)}
+  .top nav{margin-left:auto;display:flex;gap:16px;font-size:13.5px}
+  .top nav a{color:var(--dim);text-decoration:none}
+  .top nav a:hover{color:var(--ink)}
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 24px 90px}
+  h1{font-size:22px;margin:0 0 4px;letter-spacing:-.01em}
+  .lede{color:var(--dim);margin:0 0 22px;max-width:760px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+  .card .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+  .card .v{font-size:22px;font-weight:650;font-variant-numeric:tabular-nums;margin-top:3px}
+  .card.alert .v{color:var(--warn)}
+  h2{font-size:15px;margin:26px 0 10px;padding-bottom:7px;border-bottom:1px solid var(--line)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--dim);
+     font-weight:600;padding:9px 8px;border-bottom:1px solid var(--line)}
+  td{padding:9px 8px;border-bottom:1px solid rgba(120,160,220,.08);vertical-align:top}
+  td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#7fd7ff}
+  .dim{color:var(--dim)}
+  .chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:11.5px;font-weight:600;white-space:nowrap}
+  .c-none{background:rgba(239,68,68,.14);color:var(--bad)}
+  .c-done{background:rgba(34,197,94,.13);color:var(--ok)}
+  .c-soft{background:rgba(148,163,184,.14);color:#a8bdd6}
+  .c-warn{background:rgba(251,191,36,.14);color:var(--warn)}
+  button{font:inherit;cursor:pointer;border-radius:8px;border:1px solid var(--line);
+         background:#16233a;color:var(--ink);padding:6px 12px;font-size:12.5px}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);color:#04121f;font-weight:650;border-color:transparent}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  select,textarea,input{font:inherit;background:#0b1421;color:var(--ink);border:1px solid var(--line);
+                        border-radius:8px;padding:8px 10px;width:100%}
+  textarea{min-height:76px;resize:vertical}
+  dialog{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:14px;
+         padding:0;max-width:560px;width:92%}
+  dialog::backdrop{background:rgba(4,8,14,.72)}
+  .dlg-h{padding:18px 20px 0}
+  .dlg-b{padding:14px 20px}
+  .dlg-f{padding:14px 20px 18px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid var(--line)}
+  .field{margin:12px 0}
+  .field label{display:block;font-size:12px;color:var(--dim);margin-bottom:5px}
+  .hint{font-size:11.5px;color:var(--dim);margin-top:5px;line-height:1.5}
+  .msg{padding:11px 14px;border-radius:9px;margin:12px 0;font-size:13px}
+  .msg.err{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#fecaca}
+  .msg.ok{background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.3);color:#bbf7d0}
+  .msg.info{background:rgba(62,201,255,.08);border:1px solid rgba(62,201,255,.25);color:#bae6fd}
+  .empty{text-align:center;color:var(--dim);padding:34px}
+  .row-why{background:rgba(120,160,220,.04);font-size:12.5px}
+  .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  .toolbar .spacer{margin-left:auto}
+  @media(prefers-reduced-motion:no-preference){
+    tbody tr{transition:background .15s ease}
+  }
+  tbody tr:hover{background:rgba(120,160,220,.05)}
+</style></head><body>
+
+<header class="top">
+  <div class="brand">Orbit<span>IQ</span></div>
+  <nav>
+    <a href="/app">Console</a>
+    <a href="/evidence.html" style="color:var(--ink)">Evidence</a>
+    <a href="/docs.html">API</a>
+    <a href="/status.html">Status</a>
+  </nav>
+</header>
+
+<div class="wrap">
+  <h1>Evidence</h1>
+  <p class="lede">Warnings the archive holds for your fleet, and what you decided about each one.
+     A decision recorded here is bound to the exact warning by its row hash, so neither can be
+     altered afterwards without the chain breaking.</p>
+
+  <div id="auth-msg"></div>
+
+  <div class="cards" id="cards"></div>
+
+  <div class="toolbar">
+    <label class="dim" style="font-size:12.5px">Threshold
+      <select id="threshold" style="width:auto;margin-left:6px">
+        <option value="">mission policy</option>
+        <option value="1e-3">1e-3</option>
+        <option value="1e-4">1e-4</option>
+        <option value="1e-5">1e-5</option>
+        <option value="1e-6">1e-6</option>
+      </select>
+    </label>
+    <label class="dim" style="font-size:12.5px">Show
+      <select id="filter" style="width:auto;margin-left:6px">
+        <option value="undecided">needing a decision</option>
+        <option value="all">everything</option>
+        <option value="decided">already decided</option>
+      </select>
+    </label>
+    <span class="spacer"></span>
+    <button id="btn-report" class="primary">Generate Proof of Diligence</button>
+  </div>
+
+  <h2>Warnings and responses</h2>
+  <table>
+    <thead><tr>
+      <th>Row</th><th>Conjunction</th><th class="num">Miss</th><th class="num">P<sub>c</sub></th>
+      <th>Closest approach</th><th>Decision</th><th></th>
+    </tr></thead>
+    <tbody id="rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+  </table>
+</div>
+
+<dialog id="dlg">
+  <form method="dialog" id="dlg-form">
+    <div class="dlg-h">
+      <h3 style="margin:0 0 2px;font-size:16px">Record a decision</h3>
+      <div class="dim" id="dlg-sub" style="font-size:12.5px"></div>
+    </div>
+    <div class="dlg-b">
+      <div class="field">
+        <label for="d-kind">What was decided</label>
+        <select id="d-kind"></select>
+        <div class="hint" id="d-means"></div>
+      </div>
+      <div class="field" id="f-rationale">
+        <label for="d-why">Rationale</label>
+        <textarea id="d-why" placeholder="Why this call, on what basis?"></textarea>
+        <div class="hint" id="d-why-hint">A reviewer reads this field first. Required when accepting
+          risk above threshold or standing down a planned manoeuvre.</div>
+      </div>
+      <div class="field" id="f-burn" style="display:none">
+        <label for="d-dv">Manoeuvre &Delta;v (m/s)</label>
+        <input id="d-dv" type="number" step="0.001" placeholder="0.06">
+        <div class="hint">Recording that a burn happened without saying what it was is an
+          assertion, not evidence.</div>
+      </div>
+      <div id="dlg-msg"></div>
+    </div>
+    <div class="dlg-f">
+      <button value="cancel">Cancel</button>
+      <button id="d-save" class="primary" value="save">Record</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const KEY = () => localStorage.getItem("orbitiq-apikey");
+
+const fmtPc = p => {
+  if (p == null || !isFinite(Number(p))) return "—";
+  const n = Number(p);
+  return n <= 0 ? "0" : n < 1e-8 ? "< 1e-8" : n.toExponential(1);
+};
+const fmtT = t => t ? String(t).replace("T"," ").replace(/\..*$/,"") : "—";
+
+async function api(path, opts = {}) {
+  const k = KEY();
+  const r = await fetch("/api/v1" + path, {
+    ...opts,
+    headers: { "Content-Type": "application/json", ...(k ? { "X-API-Key": k } : {}), ...(opts.headers || {}) }
+  });
+  const text = await r.text();
+  let body; try { body = JSON.parse(text); } catch { body = { raw: text }; }
+  return { status: r.status, body };
+}
+
+let CATALOGUE = [], WARNINGS = [], DECISIONS = new Map(), SUMMARY = null;
+
+function threshold() {
+  const v = $("threshold").value;
+  return v === "" ? null : Number(v);
+}
+
+async function load() {
+  if (!KEY()) {
+    $("auth-msg").innerHTML = '<div class="msg err">No workspace key found in this browser. '
+      + '<a href="/login.html">Sign in</a> first — the evidence API is scoped to your workspace.</div>';
+    $("rows").innerHTML = '<tr><td colspan="7" class="empty">Sign in to see your warnings.</td></tr>';
+    return;
+  }
+
+  const t = threshold();
+  const q = t == null ? "" : "?thresholdPc=" + t;
+
+  const [cat, sum, decs] = await Promise.all([
+    api("/decisions/catalogue"),
+    api("/decisions/summary" + q),
+    api("/decisions?limit=500")
+  ]);
+
+  if (sum.status === 401 || sum.status === 402) {
+    $("auth-msg").innerHTML = '<div class="msg err">' + esc(sum.body.error || "Not authorised")
+      + (sum.body.detail ? " — " + esc(sum.body.detail) : "") + "</div>";
+    return;
+  }
+  $("auth-msg").innerHTML = "";
+
+  CATALOGUE = cat.body.decisions || [];
+  SUMMARY = sum.body;
+  DECISIONS = new Map();
+  for (const d of (decs.body.decisions || [])) {
+    if (!DECISIONS.has(d.warningSeq)) DECISIONS.set(d.warningSeq, []);
+    DECISIONS.get(d.warningSeq).push(d);
+  }
+
+  renderCards();
+  await loadWarnings();
+}
+
+function renderCards() {
+  const s = SUMMARY || {};
+  const cards = [
+    ["Screened", s.conjunctionsScreened ?? "—", ""],
+    ["Above threshold", s.conjunctionsAboveThreshold ?? "—", ""],
+    ["Decisions recorded", s.decisionsRecorded ?? "—", ""],
+    ["Manoeuvres executed", s.manoeuvresExecuted ?? "—", ""],
+    ["Median response", (s.medianResponseMinutes ?? "—") + (s.medianResponseMinutes != null ? " min" : ""), ""],
+    ["Awaiting a decision", s.unansweredAboveThreshold ?? "—", s.unansweredAboveThreshold ? "alert" : ""]
+  ];
+  $("cards").innerHTML = cards.map(([k, v, cls]) =>
+    `<div class="card ${cls}"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+}
+
+// The warning list comes from the proof payload rather than a separate query,
+// deliberately: it is the exact set the generated report will contain. If this
+// screen showed a different list from the document the operator hands to an
+// underwriter, the two would drift and nobody would notice until the awkward
+// conversation. One source, both surfaces.
+//
+// (/verify/conjunctions is the verifier's route and needs a grant token. The
+// operator has an API key, not a grant, so it is not usable here.)
+async function loadWarnings() {
+  const t = threshold();
+  const proofR = await api("/proof/diligence?format=json" + (t == null ? "" : "&thresholdPc=" + t));
+  if (proofR.status !== 200) {
+    $("rows").innerHTML = `<tr><td colspan="7" class="empty">${esc(proofR.body.error
+      || "Your plan does not include the evidence report. Contact us to enable it.")}</td></tr>`;
+    return;
+  }
+  WARNINGS = (proofR.body.rows || []).map(x => ({ ...x.warning, responses: x.responses || [] }));
+  renderRows();
+}
+
+function renderRows() {
+  const mode = $("filter").value;
+  const rows = WARNINGS.filter(w => {
+    const answered = (w.responses && w.responses.length) || DECISIONS.has(w.seq);
+    return mode === "all" ? true : mode === "decided" ? answered : !answered;
+  });
+
+  if (!rows.length) {
+    $("rows").innerHTML = `<tr><td colspan="7" class="empty">Nothing here.
+      ${mode === "undecided" ? "Every warning above the threshold has a decision recorded." : ""}</td></tr>`;
+    return;
+  }
+
+  $("rows").innerHTML = rows.map(w => {
+    const list = (w.responses && w.responses.length) ? w.responses : (DECISIONS.get(w.seq) || []);
+    const top = list[0];
+    const chip = top
+      ? `<span class="chip ${top.decision.startsWith("manoeuvre_ex") ? "c-done"
+          : top.decision === "risk_accepted" ? "c-warn" : "c-soft"}">${esc(top.decision.replace(/_/g," "))}</span>`
+      : `<span class="chip c-none">no decision</span>`;
+    const why = top && top.rationale
+      ? `<tr class="row-why"><td></td><td colspan="6" class="dim"><b>Rationale:</b> ${esc(top.rationale)}</td></tr>` : "";
+    return `<tr>
+      <td class="mono">#${esc(w.seq)}</td>
+      <td>${esc(w.aName || w.aId)} <span class="dim">vs</span> ${esc(w.bName || w.bId)}
+          <div class="dim mono" style="font-size:11px">${esc((w.h||"").slice(0,12))}</div></td>
+      <td class="num">${esc(w.missKm ?? "—")}</td>
+      <td class="num">${fmtPc(w.pc)}</td>
+      <td class="dim">${fmtT(w.tca)}</td>
+      <td>${chip}</td>
+      <td style="text-align:right"><button data-seq="${esc(w.seq)}">${top ? "Update" : "Decide"}</button></td>
+    </tr>${why}`;
+  }).join("");
+
+  for (const b of document.querySelectorAll("#rows button[data-seq]")) {
+    b.addEventListener("click", () => openDialog(Number(b.dataset.seq)));
+  }
+}
+
+let CURRENT = null;
+
+function openDialog(seq) {
+  CURRENT = WARNINGS.find(w => w.seq === seq);
+  if (!CURRENT) return;
+  $("dlg-sub").textContent = `Row #${seq} · ${CURRENT.aName || CURRENT.aId} vs ${CURRENT.bName || CURRENT.bId}`
+    + ` · Pc ${fmtPc(CURRENT.pc)} · closest approach ${fmtT(CURRENT.tca)}`;
+  $("d-kind").innerHTML = CATALOGUE.map(c =>
+    `<option value="${esc(c.decision)}">${esc(c.decision.replace(/_/g," "))}</option>`).join("");
+  $("d-why").value = "";
+  $("d-dv").value = "";
+  $("dlg-msg").innerHTML = "";
+  onKindChange();
+  $("dlg").showModal();
+}
+
+// Only demand the fields that matter for the chosen outcome. Asking for a
+// rationale on every row trains people to type "n/a", which is a worse record
+// than an honest blank.
+function onKindChange() {
+  const k = $("d-kind").value;
+  const c = CATALOGUE.find(x => x.decision === k);
+  $("d-means").textContent = c ? c.means : "";
+  const needsWhy = k === "risk_accepted" || k === "manoeuvre_cancelled";
+  const needsBurn = k === "manoeuvre_planned" || k === "manoeuvre_executed";
+  $("f-burn").style.display = needsBurn ? "" : "none";
+  $("d-why-hint").textContent = needsWhy
+    ? "Required for this outcome — at least 20 characters. A reviewer reads it first."
+    : "Optional, but it is the field that makes the record defensible later.";
+}
+$("d-kind").addEventListener("change", onKindChange);
+
+$("dlg-form").addEventListener("submit", async (e) => {
+  if (e.submitter && e.submitter.value === "cancel") return;
+  e.preventDefault();
+  const kind = $("d-kind").value;
+  const body = {
+    warningSeq: CURRENT.seq,
+    decision: kind,
+    rationale: $("d-why").value.trim() || undefined
+  };
+  const dv = parseFloat($("d-dv").value);
+  if (isFinite(dv)) body.manoeuvre = { deltaVms: dv };
+
+  $("d-save").disabled = true;
+  const r = await api("/decisions", { method: "POST", body: JSON.stringify(body) });
+  $("d-save").disabled = false;
+
+  if (r.status !== 201) {
+    // Surface the server's own wording. It explains WHY a rationale or burn
+    // parameter is required, which is more useful than a generic failure.
+    $("dlg-msg").innerHTML = `<div class="msg err">${esc(r.body.error || "Could not record that.")}</div>`;
+    return;
+  }
+  $("dlg").close();
+  await load();
+});
+
+$("threshold").addEventListener("change", load);
+$("filter").addEventListener("change", renderRows);
+
+// The report is fetched rather than opened directly. A plain window.open sends
+// no X-API-Key header, so navigating to the endpoint would just 401 — and the
+// alternative, putting the key in the query string, would leak a workspace
+// credential into browser history and proxy logs. Fetch with the header, hand
+// the result to the tab as a blob, revoke the object URL afterwards.
+$("btn-report").addEventListener("click", async () => {
+  const btn = $("btn-report");
+  const t = threshold();
+  btn.disabled = true; btn.textContent = "Generating…";
+  try {
+    const k = KEY();
+    const r = await fetch("/api/v1/proof/diligence" + (t == null ? "" : "?thresholdPc=" + t),
+      { headers: k ? { "X-API-Key": k } : {} });
+    if (!r.ok) {
+      let msg = "Could not generate the report.";
+      try { msg = (await r.json()).error || msg; } catch {}
+      $("auth-msg").innerHTML = `<div class="msg err">${esc(msg)}</div>`;
+      return;
+    }
+    const url = URL.createObjectURL(await r.blob());
+    const w = window.open(url, "_blank");
+    if (!w) {
+      $("auth-msg").innerHTML = '<div class="msg info">Your browser blocked the popup. '
+        + 'Allow popups for this site, or use the API directly.</div>';
+    }
+    // Give the new tab time to take the URL before releasing it.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } finally {
+    btn.disabled = false; btn.textContent = "Generate Proof of Diligence";
+  }
+});
+
+load();
+</script>
+</body></html>
