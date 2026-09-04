@@ -1,0 +1,132 @@
+# ============================================================
+# Is the screening pipeline still alive?
+#
+# ── Why this exists ─────────────────────────────────────────
+# On 4 September 2026 the Screening workflow began aborting on a heap
+# out-of-memory. It did so for six consecutive runs. Nothing noticed.
+#
+# Not because monitoring failed, but because there was none of the only kind
+# that would have helped. The published JSON stayed on the screening branch
+# exactly where the last healthy run had left it, so every consumer kept
+# fetching it successfully. A dead pipeline and a healthy one produce the same
+# 200 and the same well-formed data; the only thing that distinguishes them is
+# a timestamp, and nobody was reading it.
+#
+# The web service now reads it (src/freshness.js), so anyone LOOKING at the
+# snapshot can see how old it is. That is necessary and not sufficient: the
+# outage ran for six hours precisely because nobody was looking.
+#
+# ── Why the check lives here and not in the app ─────────────
+# The same reason witness.js records observations outside the service: a
+# component cannot be trusted to report its own absence. If this check lived
+# in the screening workflow it would not run when screening was broken, which
+# is the only time it matters. If it lived in the web service it would go
+# quiet whenever the free-tier instance slept.
+#
+# So it runs on its own schedule, reads the artefact the worker publishes, and
+# fails loudly when that artefact stops moving. A failed workflow run is the
+# alerting channel — GitHub emails the repository owner on failure by default,
+# which costs nothing and needs no third-party service.
+#
+# ── What it deliberately does NOT do ────────────────────────
+# Fail when it cannot tell. If GitHub's API is unreachable or the branch is
+# missing, that is an absence of information, not evidence of a stopped
+# pipeline, and reporting it as one would train the owner to ignore this
+# workflow — which would leave the system exactly where it started, only with
+# more email. Those cases warn and pass.
+# ============================================================
+name: Staleness
+
+on:
+  schedule:
+    # Hourly, offset from screening (:37), the data mirror (:23) and the
+    # witness so the checks are spread across the hour rather than stacked.
+    # Twenty-three minutes after screening starts is long enough that a run in
+    # progress is not mistaken for a run that never happened.
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check how long since screening last published
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          node --input-type=module <<'EOF'
+          // The thresholds are imported rather than restated. If the alarm used
+          // its own numbers it would eventually disagree with what the public
+          // endpoint calls "stale", and the two would drift apart in the
+          // direction nobody notices — the endpoint reassuring a reader while
+          // the alarm stays quiet, or the reverse.
+          import { assess, describeAge, STALE_AFTER_HOURS, DOWN_AFTER_HOURS }
+            from "./src/freshness.js";
+
+          const repo = process.env.REPO;
+          const url = `https://api.github.com/repos/${repo}/contents/data/screening/index.json?ref=screening`;
+
+          let publishedAt = null, reachable = false, detail = "";
+          try {
+            const r = await fetch(url, {
+              headers: {
+                Accept: "application/vnd.github+json",
+                Authorization: `Bearer ${process.env.GH_TOKEN}`,
+                "User-Agent": "orbitiq-staleness"
+              },
+              signal: AbortSignal.timeout(20000)
+            });
+            if (r.ok) {
+              const j = await r.json();
+              const idx = JSON.parse(Buffer.from(j.content, "base64").toString("utf8"));
+              publishedAt = idx.generatedAt ?? null;
+              reachable = true;
+              detail = `${(idx.screens || []).length} screens over ${idx.screenedPopulation} objects`;
+            } else {
+              detail = `HTTP ${r.status}`;
+            }
+          } catch (e) {
+            detail = e.message;
+          }
+
+          // Cannot tell is not the same as bad. Say so and pass: an alarm that
+          // fires on its own blind spots gets muted, and a muted alarm is worse
+          // than none because it is believed to be working.
+          if (!reachable) {
+            console.log(`::warning::Could not read the screening index (${detail}). `
+              + `This says nothing about the pipeline either way, so it is not being `
+              + `treated as a failure.`);
+            process.exit(0);
+          }
+
+          const f = assess({ generatedAt: publishedAt });
+          console.log(`screening index published at ${f.asOf ?? "an unknown time"} (${detail})`);
+          console.log(`state: ${f.state} — ${f.summary}`);
+
+          if (f.state === "fresh") {
+            console.log(`::notice::Screening is current: ${f.summary}.`);
+            process.exit(0);
+          }
+
+          // Everything else is worth an email. "unknown" included: an index
+          // with no usable generatedAt is the same shape as a stopped pipeline,
+          // and this is the one place that must not resolve that ambiguity in
+          // the comfortable direction.
+          const age = f.ageHours == null ? "an unknown time" : describeAge(f.ageHours);
+          console.log(`::error::Screening has not published for ${age} `
+            + `(tolerance ${STALE_AFTER_HOURS} h, treated as down beyond ${DOWN_AFTER_HOURS} h). `
+            + `The published JSON is still being served, so consumers see well-formed data `
+            + `with no indication that it has stopped moving. Check the Screening workflow.`);
+          process.exit(1);
+          EOF
