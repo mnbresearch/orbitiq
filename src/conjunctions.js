@@ -208,11 +208,19 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
 
   const primaryIdSet = new Set(primaries.map(s => s.id));
 
-  // `open` holds the approach currently in progress for each pair; `episodes`
-  // holds the ones that have finished. A pair may contribute several.
+  // `open` holds the approach currently in progress for each pair; `kept` holds
+  // the deepest finished one per pair, exactly as the previous implementation
+  // did; `extras` holds additional approaches within a hard global budget.
+  //
+  // The shape matters more than it looks. A wrapper object per pair —
+  // { n, best: [...] } — costs two extra allocations per Map entry, and on the
+  // widest screen (unscoped, 24 h, 50 km) this Map has millions of keys. That
+  // version reproduced the production out-of-memory in V8's Map::Grow. Keeping
+  // one plain episode per pair, with the recurrence count carried ON it,
+  // restores the original memory profile.
   const open = new Map();       // "idA|idB" -> {a,b,tSec,d2,lastStep}
-  const episodes = [];          // finished approaches, one per close pass
-  const perPair = new Map();    // "idA|idB" -> how many approaches seen
+  const kept = new Map();       // "idA|idB" -> ep  (deepest; ep.n = recurrences)
+  const extras = [];            // additional approaches, globally bounded
 
   // A pair in a shared shell can re-approach dozens of times in one window at
   // essentially the same distance. Emitting every one would bury the isolated
@@ -220,12 +228,62 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
   // needs a single conversation. So the deepest few are kept and the true
   // count is carried on them, which is more useful to an operator than either
   // one row or sixty.
-  const MAX_EPISODES_PER_PAIR = 8;
+  //
+  // Four rather than eight. The output is capped at 100 events sorted by
+  // distance, so every slot a recurring pair takes is one an unrelated
+  // encounter does not get; and the fifth-deepest pass of a pair that already
+  // has four reported adds almost nothing a reader would act on, because
+  // `approachesInWindow` already tells them it recurs. Halving it also halves
+  // the memory this bookkeeping costs on a 6,000-object catalogue.
+  const MAX_EPISODES_PER_PAIR = 4;
+
+  // ── Trim while accumulating, not afterwards ───────────────
+  //
+  // The first version of this pushed every finished episode into one array and
+  // capped per pair at the end. That is bounded only by the total number of
+  // approaches in the window, where the code it replaced was bounded by the
+  // number of distinct PAIRS — and on a real catalogue, with 6,000 objects and
+  // constellation shells whose members drift past each other continuously, the
+  // difference is a few hundred thousand entries against a few million.
+  //
+  // It aborted the production screening worker with a heap out-of-memory after
+  // three minutes and fifty seconds. Trimming here restores the old memory
+  // order while still counting every approach: `n` is the true total, `best`
+  // holds only the ones that will be reported.
+  // A hard ceiling on the extra episodes, on top of the one-per-pair that the
+  // previous implementation kept.
+  //
+  // Per-pair capping alone is not enough. The worker runs twelve screens and
+  // the widest is unscoped, 24 hours, 50 km — where the coarse gate is several
+  // hundred kilometres and a LEO pair crosses it on every orbit, so the same
+  // pair legitimately opens and closes fifteen times a day. Multiply that by
+  // the pair count of a 6,000-object catalogue and four-per-pair is still a
+  // large multiple of what the old code held.
+  //
+  // So the first (deepest) episode per pair is always kept — exactly the old
+  // memory profile — and additional episodes come out of a shared budget.
+  // Beyond it, recurrences are still COUNTED, so `approachesInWindow` stays
+  // truthful; only the extra rows stop being retained. Since the response is
+  // capped at 100 events sorted by distance, the budget is far larger than
+  // anything that can reach the output.
+  const MAX_EXTRA_EPISODES = 5000;
 
   function closeEpisode(id, ep) {
-    perPair.set(id, (perPair.get(id) || 0) + 1);
-    episodes.push({ id, ...ep });
     open.delete(id);
+    const cur = kept.get(id);
+    if (!cur) { ep.n = 1; kept.set(id, ep); return; }
+    cur.n++;
+    if (ep.d2 < cur.d2) {
+      // A closer pass: it becomes the one always kept, and the previous
+      // deepest is demoted to the extras budget rather than dropped.
+      ep.n = cur.n;
+      kept.set(id, ep);
+      if (extras.length < MAX_EXTRA_EPISODES) extras.push({ id, ...cur });
+    } else if (extras.length < MAX_EXTRA_EPISODES) {
+      extras.push({ id, ...ep });
+    }
+    // Beyond the budget the recurrence is still counted on `cur.n`, so
+    // approachesInWindow stays truthful; only the extra row is not retained.
   }
 
   const cell = coarseGate;
@@ -296,19 +354,22 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
   // most wants to hear about.
   for (const [id, ep] of open) closeEpisode(id, ep);
 
-  // Keep the deepest few per pair, so a repeating geometry contributes its
-  // worst passes rather than all of them.
-  const byPair = new Map();
-  for (const ep of episodes) {
-    const list = byPair.get(ep.id) || [];
-    list.push(ep);
-    byPair.set(ep.id, list);
-  }
+  // Flatten: the deepest per pair always, plus up to MAX_EPISODES_PER_PAIR-1
+  // extras for pairs that recurred, carrying the true count on every row.
   const candidates = [];
-  for (const [id, list] of byPair) {
+  for (const [id, ep] of kept) candidates.push({ ...ep, id, approachesInWindow: ep.n });
+
+  const extraByPair = new Map();
+  for (const ex of extras) {
+    const list = extraByPair.get(ex.id) || [];
+    list.push(ex);
+    extraByPair.set(ex.id, list);
+  }
+  for (const [id, list] of extraByPair) {
     list.sort((x, y) => x.d2 - y.d2);
-    for (const ep of list.slice(0, MAX_EPISODES_PER_PAIR)) {
-      candidates.push({ ...ep, approachesInWindow: list.length });
+    const n = kept.get(id)?.n ?? list.length;
+    for (const ex of list.slice(0, MAX_EPISODES_PER_PAIR - 1)) {
+      candidates.push({ ...ex, approachesInWindow: n });
     }
   }
 
@@ -368,6 +429,8 @@ export function screenConjunctions(sats, primaryOrg, hours = 6, thresholdKm = 10
       coarseGateKm: +coarseGate.toFixed(1),
       completeToRelVelKmS: V_REL_MAX_KMS,
       maxApproachesReportedPerPair: MAX_EPISODES_PER_PAIR,
+      extraApproachRowsRetained: extras.length,
+      extraApproachRowBudget: MAX_EXTRA_EPISODES,
       approachNote: "Each separate close pass is reported, not only the deepest one: a pair "
                   + "may approach several times in a window and each has its own time of "
                   + "closest approach. Where a pair recurs more often than the cap, the "
