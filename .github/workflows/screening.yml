@@ -61,7 +61,12 @@ jobs:
         env:
           SCREEN_MAX_OBJECTS: "6000"
           SCREEN_BUDGET: "3000000"
-        run: node scripts/screen.mjs
+        # Heap stated explicitly rather than left to whatever the runner image
+        # defaults to. A screening change once aborted with exit 134 — a heap
+        # out-of-memory — after three minutes of work, and the only clue was
+        # that number. Naming the limit means a future regression fails at a
+        # size somebody chose, and the same size locally as in CI.
+        run: node --max-old-space-size=3072 scripts/screen.mjs
 
       - name: Verify output before publishing
         run: |
