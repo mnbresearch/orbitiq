@@ -15,6 +15,7 @@ import { screenConjunctions } from "./src/conjunctions.js";
 import { hohmann, launchPlan, congestion, detectManeuvers, LAUNCH_SITES } from "./src/astro.js";
 import * as intel from "./src/intel.js";
 import * as coverage from "./src/coverage.js";
+import * as freshness from "./src/freshness.js";
 import { elementAgeDays } from "./src/orbitstate.js";
 
 // How stale the elements a sweep ran against were. A pass over a four-day-old
@@ -239,6 +240,10 @@ const SCREEN_BASE = process.env.ORBITIQ_SCREEN_BASE ||
   "https://raw.githubusercontent.com/mnbresearch/orbitiq/screening/data/screening";
 let screenFeedOk = null;      // null = untried, true/false = last outcome
 let screenFeedAt = 0;
+// The `generatedAt` the WORKER stamped on the file it published — not the time
+// we fetched it. See the note on reachability below for why the distinction is
+// the whole point.
+let screenFeedGeneratedAt = null;
 
 async function fetchPublishedScreen(org, hours, thresholdKm) {
   const name = `${org || "all"}-${hours}-${thresholdKm}.json`;
@@ -251,6 +256,7 @@ async function fetchPublishedScreen(org, hours, thresholdKm) {
     const j = await r.json();
     if (!j || !Array.isArray(j.events)) { screenFeedOk = false; return null; }
     screenFeedOk = true; screenFeedAt = Date.now();
+    if (typeof j.generatedAt === "string") screenFeedGeneratedAt = j.generatedAt;
     return j;
   } catch {
     screenFeedOk = false; screenFeedAt = Date.now();
@@ -258,11 +264,39 @@ async function fetchPublishedScreen(org, hours, thresholdKm) {
   }
 }
 
-export const screenFeedStatus = () => ({
-  base: SCREEN_BASE,
-  reachable: screenFeedOk,
-  lastCheck: screenFeedAt ? new Date(screenFeedAt).toISOString() : null
-});
+/**
+ * Health of the published screening feed.
+ *
+ * ── Why `reachable` alone was worse than useless ────────────
+ * When the screening workflow started aborting on a heap out-of-memory, the
+ * JSON files it had published stayed exactly where they were on the branch.
+ * Every fetch kept returning 200 with well-formed data, so `reachable` stayed
+ * true for five consecutive dead cycles. The one indicator this service had
+ * for the health of its data pipeline was green for the entire outage, because
+ * it was measuring whether a file could be downloaded rather than whether
+ * anything was still writing to it.
+ *
+ * A stale file is the NORMAL failure here, not the exotic one: the worker
+ * publishing to a branch means the artefact outlives the process. So the
+ * question worth answering is not "can we reach it" but "when was it last
+ * written", and the worker has always stamped that on the file.
+ */
+export const screenFeedStatus = () => {
+  const f = freshness.assess({ generatedAt: screenFeedGeneratedAt });
+  return {
+    base: SCREEN_BASE,
+    reachable: screenFeedOk,
+    lastCheck: screenFeedAt ? new Date(screenFeedAt).toISOString() : null,
+    // When the worker last PUBLISHED, as opposed to when we last fetched.
+    publishedAt: screenFeedGeneratedAt,
+    freshness: f,
+    reachabilityNote:
+      "`reachable` says only that the file downloaded. The feed is published to a branch, so "
+      + "it keeps downloading perfectly after the job producing it has stopped — which is "
+      + "exactly what happened during the screening outage of 4 September 2026. Read "
+      + "`freshness` for whether the pipeline is alive."
+  };
+};
 
 function cachePut(key, result) {
   conjCache.set(key, { at: Date.now(), result });
@@ -773,6 +807,18 @@ api.get("/snapshot", async (req, res) => {
     const recent = ledger.query({ type: "conjunction", since, limit: 400 }).events || [];
     const bands = { CRITICAL: 0, HIGH: 0, MODERATE: 0, LOW: 0 };
     let tightest = null, rigorous = 0, currentModel = 0, supersededModel = 0;
+    // When the archive last learned anything about conjunctions.
+    //
+    // This block used to carry exactly one timestamp — the `generatedAt` at the
+    // top of the response — and that is the time the RESPONSE was built, which
+    // is always now. So when the screening workflow died and stopped feeding
+    // the archive, this endpoint went on publishing 400 conjunctions and a
+    // 0.192 km tightest approach under a timestamp that said "just now". It ran
+    // that way for five consecutive screening cycles.
+    //
+    // The newest row's own time is the honest answer to "how current is this?",
+    // because it is a property of the data rather than of the request.
+    let newestRowAt = null;
     for (const e of recent) {
       if (bands[e.risk] !== undefined) bands[e.risk]++;
       if (e.pcMethod === "foster-2d") rigorous++;
@@ -786,6 +832,7 @@ api.get("/snapshot", async (req, res) => {
       }
     }
     const screened = Object.values(bands).reduce((a, b) => a + b, 0);
+    const conjFreshness = freshness.assess({ generatedAt: newestRowAt });
 
     // Catalogue figures come from whatever is already cached. If the catalogue
     // has not loaded yet we say so rather than reporting zero objects, which
@@ -845,6 +892,17 @@ api.get("/snapshot", async (req, res) => {
       },
       conjunctions: {
         windowDays: 7, screened, bands, tightest,
+        // ── How old is this? ────────────────────────────────
+        // `asOf` is the newest conjunction row behind these figures, and
+        // `freshness` says whether that is within the screening cadence.
+        // Without them a reader cannot distinguish a quiet sky from a stopped
+        // screener, and those are the two readings this product exists to
+        // separate. `qualifier` is the sentence that belongs next to any
+        // "nothing was found" claim, so the wording cannot drift between here,
+        // the status page and the report.
+        asOf: newestRowAt,
+        freshness: conjFreshness,
+        qualifier: freshness.qualify(conjFreshness),
         rigorousPc: rigorous,
         pcModel: pcmod.PC_MODEL_VERSION,
         rowsCurrentModel: currentModel,
