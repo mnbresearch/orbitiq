@@ -46,7 +46,27 @@ permissions:
 jobs:
   screen:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # ── Why this is 45 and not 20 ───────────────────────────────
+    # Publishing is all-or-nothing: the screen either finishes and force-pushes
+    # a complete set of files, or it produces nothing and the screening branch
+    # keeps yesterday's data. A cancelled run is therefore not a neutral event.
+    # It looks identical, from the outside, to a healthy pipeline — the JSON is
+    # still there and still fetches with a 200.
+    #
+    # At 20 minutes this job was running against its own cap. Successful runs
+    # were taking 12 to 20 minutes, one of them 20m 27s, so the margin was
+    # already gone before the per-approach episode tracking made each gate hit
+    # cost a Map lookup instead of a comparison. The first run after that change
+    # was cancelled at exactly 1204 seconds.
+    #
+    # A cap that trips on ordinary work is not a safety limit, it is an outage
+    # on a timer. 45 minutes leaves real headroom while still being well inside
+    # the hourly schedule, and the concurrency group above means a slow run
+    # delays the next one rather than overlapping it. Standard runners on a
+    # public repository are free and unmetered, so the extra ceiling costs
+    # nothing; the only thing it buys back is the ability to fail for a reason
+    # somebody chose.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
