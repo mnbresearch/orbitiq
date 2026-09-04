@@ -820,6 +820,7 @@ api.get("/snapshot", async (req, res) => {
     // because it is a property of the data rather than of the request.
     let newestRowAt = null;
     for (const e of recent) {
+      if (e.t && (newestRowAt == null || e.t > newestRowAt)) newestRowAt = e.t;
       if (bands[e.risk] !== undefined) bands[e.risk]++;
       if (e.pcMethod === "foster-2d") rigorous++;
       if (e.pcModel === pcmod.PC_MODEL_VERSION) currentModel++; else supersededModel++;
