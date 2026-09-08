@@ -82,9 +82,17 @@ test("hash chain detects tampering", () => {
     writeRows(rows);
     const v = verifyFresh();
     assert.equal(v.ok, false, "an edited miss distance verified clean");
-    assert.equal(v.reason, "row altered");
-    assert.equal(v.seq, 2, "pointed at the wrong row");
-    assert.equal(v.verified, 1, "should have verified exactly the rows before the edit");
+    // The verdict used to be "row altered" and stopped at the first bad row, so
+    // `verified` meant "rows before the break". It now walks the whole archive
+    // and names every mismatch, because six bad rows and six hundred used to be
+    // indistinguishable from outside. The claim is unchanged and the reporting
+    // is stricter: still caught, still at row 2, and now with a count.
+    assert.equal(v.reason, "content hash mismatch");
+    assert.equal(v.firstUnverifiableSeq, 2, "pointed at the wrong row");
+    assert.equal(v.unverifiableRows, 1, "exactly one row was edited");
+    assert.equal(v.verified, 3, "the other three rows are untouched and must still count as verified");
+    assert.equal(v.linkageIntact, true, "an edit does not disturb the ordering, and saying so is the "
+      + "difference between 'one row's contents are in question' and 'the archive was restructured'");
   });
 
   check("deleting a row is caught", () => {
@@ -137,12 +145,47 @@ test("hash chain detects tampering", () => {
       "a seal that no longer matches the tip means history moved under it");
   });
 
-  check("seal() refuses to certify a broken chain", () => {
+  check("seal() refuses when the ORDER of the archive is in question", () => {
+    // Linkage is the one failure that makes sealing meaningless: if rows have
+    // been removed or reordered then "the tip" is not reliably the tip, and a
+    // checkpoint over it would assert something untrue.
+    const rows = pristine.filter(r => r.seq !== 3);
+    writeRows(rows);
+    const s = sealFresh();
+    assert.equal(s.ok, false, "sealed a chain whose linkage is broken");
+    assert.match(s.error, /linkage/i);
+    writeRows(pristine);
+  });
+
+  check("seal() still checkpoints when only a row's CONTENT is in question", () => {
+    // Deliberate change of behaviour, and the reasoning matters.
+    //
+    // This used to refuse on any verification failure. In production that meant
+    // 600 unreconstructible rows stopped sealing entirely for 25 hours, while
+    // thousands of new and perfectly good rows piled up with nothing outside
+    // the service vouching for them.
+    //
+    // That helps an attacker rather than hindering one. A body edit does not
+    // change the tip hash, so the seal is unaffected by it; and the determined
+    // attack — rewriting a row AND every hash after it — is caught by the seal
+    // cross-check, which still refuses. What refusing to seal actually achieves
+    // is freezing external attestation on everything appended afterwards.
+    //
+    // So the seal proceeds, and carries the count of what it cannot vouch for.
     const rows = pristine.map(r => ({ ...r }));
     rows[2].index = 0.1;
     writeRows(rows);
+    // Clear the seal file so a genuinely NEW seal is taken. seal() returns the
+    // existing one untouched when the tip has not advanced, which is correct
+    // and also means the old seal would be handed back with none of the new
+    // fields on it.
+    fs.rmSync(path.join(tmp, "ledger-seals.json"), { force: true });
     const s = sealFresh();
-    assert.equal(s.ok, false, "sealed a chain that does not verify");
+    assert.equal(s.ok, true, "a content mismatch stopped external attestation of every later row");
+    assert.equal(s.seal.unverifiableRows, 1,
+      "the seal must record that it was taken over an archive with known unverifiable rows, "
+      + "or a reader of the seal file alone would take it for a clean bill of health");
+    assert.equal(s.seal.seq, 4, "the seal still records the real tip");
     writeRows(pristine);
   });
 
