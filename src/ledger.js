@@ -48,11 +48,29 @@ export const hashRow = (seq, prev, body) =>
     .update(String(seq) + "|" + prev + "|" + canonical(body))
     .digest("hex").slice(0, HASH_LEN);
 
-/** Key-sorted JSON so the hash cannot change just because key order did. */
+/**
+ * Key-sorted JSON so the hash cannot change just because key order did.
+ *
+ * Undefined-valued keys are omitted, and undefined array entries become null,
+ * because that is what JSON.stringify does when the row is written to disk.
+ * This function decides what gets hashed and JSON.stringify decides what gets
+ * stored, so any disagreement between them produces a row whose body cannot be
+ * reconstructed from the file — a permanent, unfixable verification failure
+ * with no edit behind it. That is not hypothetical; it is what happened to 600
+ * rows on 7 September 2026. See forStorage() near append().
+ *
+ * Note this changes no historical hash. A row read back from the file has
+ * already been through JSON.stringify, so it never carries undefined; only
+ * in-memory rows on the write path ever could.
+ */
 export function canonical(o) {
   if (o === null || typeof o !== "object") return JSON.stringify(o);
-  if (Array.isArray(o)) return "[" + o.map(canonical).join(",") + "]";
-  return "{" + Object.keys(o).sort().map(k => JSON.stringify(k) + ":" + canonical(o[k])).join(",") + "}";
+  if (Array.isArray(o)) {
+    return "[" + o.map(v => (v === undefined || typeof v === "function" ? "null" : canonical(v))).join(",") + "]";
+  }
+  return "{" + Object.keys(o).sort()
+    .filter(k => o[k] !== undefined && typeof o[k] !== "function")
+    .map(k => JSON.stringify(k) + ":" + canonical(o[k])).join(",") + "}";
 }
 
 /** The chain fields are metadata, not payload — excluded from the body hash. */
@@ -90,8 +108,47 @@ function tip() {
   return a ? { seq: a.seq, h: a.h } : null;
 }
 
+/**
+ * Reduce a row to exactly what a reader will parse back out of the file.
+ *
+ * ── Why this exists ─────────────────────────────────────────
+ * A row is hashed in memory and stored with JSON.stringify. Those two did not
+ * agree about `undefined`. canonical() walks Object.keys(), which includes keys
+ * whose value is undefined, and JSON.stringify(undefined) returns the JS value
+ * undefined, which string concatenation turns into the literal text
+ * "undefined". JSON.stringify, writing the row out, drops those keys entirely.
+ *
+ * So a row carrying `pc: undefined` was hashed over
+ *
+ *     {..., "pc":undefined, ...}
+ *
+ * and written to disk as
+ *
+ *     {...}
+ *
+ * The body that produced the hash no longer existed anywhere. Every future
+ * verification of that row had to fail, permanently, and there was no edit and
+ * no attacker — just two serialisers disagreeing about a missing value.
+ *
+ * On 7 September 2026 a sweep ran on a freshly woken instance before the
+ * catalogue had loaded, so augmentation left pc, pcText, sigmaMajorKm,
+ * sigmaMinorKm, ageDaysA and ageDaysB undefined on 600 conjunction rows. From
+ * the first of them the whole archive read as "chain broken — row altered",
+ * and because seal() refuses to seal a broken chain, external sealing stopped
+ * for 25 hours as well.
+ *
+ * ── The rule now ────────────────────────────────────────────
+ * Hash what you store; store what you hash. Normalising through a JSON round
+ * trip BEFORE the hash is taken makes that true by construction, and not only
+ * for undefined: NaN and Infinity become null, Date becomes a string, and
+ * anything else JSON cannot carry is resolved while the value is still being
+ * decided rather than silently afterwards. Fixing canonical() alone would have
+ * closed this instance of the bug and left the class of it open.
+ */
+const forStorage = r => JSON.parse(JSON.stringify(r));
+
 export function append(type, payload) {
-  const rows = (Array.isArray(payload) ? payload : [payload]).map(p => ({
+  const rows = (Array.isArray(payload) ? payload : [payload]).map(p => forStorage({
     t: new Date().toISOString(), type, ...p
   }));
   if (!rows.length) return 0;
@@ -106,7 +163,28 @@ export function append(type, payload) {
     seq += 1;
     const h = hashRow(seq, prev, bodyOf(r));
     r.seq = seq; r.prev = prev; r.h = h;
-    prev = h;
+
+    // ── Prove the row survives its own round trip, before writing it ──
+    //
+    // The whole chain rests on one invariant: the hash stored beside a row is
+    // the hash of the row a reader will parse back. Nothing checked that, so
+    // when it stopped being true the archive did not find out at the moment of
+    // writing — it found out afterwards, from the public verification endpoint,
+    // and by then the rows were on disk in an append-only file.
+    //
+    // This is the cheapest possible statement of that invariant, at the one
+    // point where it is still fixable. Re-hashing a row we just built is
+    // microseconds; a row that fails here is repaired by adopting the parsed
+    // form, so what goes to disk always matches its hash rather than being
+    // written poisoned and discovered later.
+    const readBack = JSON.parse(JSON.stringify(r));
+    if (hashRow(readBack.seq, readBack.prev, bodyOf(readBack)) !== h) {
+      console.error("ledger: row " + seq + " did not survive serialisation; storing the parsed form");
+      for (const k of Object.keys(r)) if (!(k in readBack)) delete r[k];
+      Object.assign(r, readBack);
+      r.h = hashRow(r.seq, r.prev, bodyOf(r));
+    }
+    prev = r.h;
   }
 
   loadAll().push(...rows);
@@ -145,6 +223,11 @@ export function verify() {
   const all = loadAll();
   const anchor = readJson(ANCHOR_FILE, null);
   let checked = 0, unchained = 0, firstChainedIndex = -1;
+  const contentMismatches = [];
+  // Read once so every exit path can report it. Withholding the tip on failure
+  // told the reader nothing and cost them the one identifier they could take
+  // away and compare against a seal.
+  const tipRow = tip();
   let prev = anchor ? anchor.h : GENESIS;
   let expectSeq = anchor ? anchor.seq + 1 : 1;
 
@@ -177,6 +260,7 @@ export function verify() {
           reason: "retained window does not continue from the rotation anchor",
           atIndex: i, seq: r.seq, expectedSeq: expectSeq,
           anchorSeq: anchor.seq, verified: checked, unchained, t: r.t,
+          linkageIntact: false, tipSeq: tipRow ? tipRow.seq : null, tipHash: tipRow ? tipRow.h : null,
           means: "Rotation recorded that rows up to sequence " + anchor.seq + " were dropped, "
                + "so the first retained row must be " + expectSeq + ". It is " + r.seq + ". "
                + "Rows have been removed from the start of the retained window, or the anchor "
@@ -186,15 +270,36 @@ export function verify() {
     }
     if (r.seq !== expectSeq) {
       return { ok: false, reason: "sequence gap", atIndex: i, expectedSeq: expectSeq,
-               foundSeq: r.seq, verified: checked, unchained, t: r.t };
+               foundSeq: r.seq, seq: r.seq, verified: checked, unchained, t: r.t,
+               linkageIntact: false, tipSeq: tipRow ? tipRow.seq : null, tipHash: tipRow ? tipRow.h : null,
+               means: "A sequence number is missing. Rows have been removed from the middle of the "
+                    + "archive, or two histories have been spliced together." };
     }
     if (r.prev !== prev) {
       return { ok: false, reason: "broken link", atIndex: i, seq: r.seq,
-               verified: checked, unchained, t: r.t };
+               verified: checked, unchained, t: r.t,
+               linkageIntact: false, tipSeq: tipRow ? tipRow.seq : null, tipHash: tipRow ? tipRow.h : null,
+               means: "This row does not point at the row before it. Unlike a content mismatch, this "
+                    + "means the ORDER of the archive is in question, not just one row's contents." };
     }
+    // ── A content mismatch is recorded, not fatal to the walk ──────
+    //
+    // Linkage and content are two different claims and they fail for different
+    // reasons, so collapsing them loses the distinction a reader most needs.
+    //
+    // `prev` chains off the STORED hash, which is intact here, so the walk can
+    // continue and describe the whole archive instead of stopping at the first
+    // bad row. It matters: 600 unreconstructible rows out of 37,971 used to
+    // render the entire record as "chain broken — row altered", with no way to
+    // tell from the outside whether that meant six hundred rows or all of them.
+    //
+    // Continuing is not leniency. Every mismatch is still counted, still named,
+    // and still makes ok false. What changes is that the answer is now "these
+    // rows, this many, here" rather than "somewhere".
     if (hashRow(r.seq, r.prev, bodyOf(r)) !== r.h) {
-      return { ok: false, reason: "row altered", atIndex: i, seq: r.seq,
-               verified: checked, unchained, t: r.t };
+      contentMismatches.push({ seq: r.seq, atIndex: i, t: r.t, type: r.type });
+      prev = r.h; expectSeq = r.seq + 1;
+      continue;
     }
     prev = r.h; expectSeq = r.seq + 1; checked++;
   }
@@ -223,7 +328,9 @@ export function verify() {
         ok: false,
         reason: "row contradicts a published seal",
         seq: s.seq, sealedHash: s.hash, foundHash: row.h, sealedAt: s.at,
-        verified: checked, unchained,
+        verified: checked, unchained, linkageIntact: true,
+        tipSeq: tipRow ? tipRow.seq : null, tipHash: tipRow ? tipRow.h : null,
+        unverifiableRows: contentMismatches.length,
         means: "The archive is internally consistent but disagrees with a checkpoint published "
              + "at " + s.at + ". A seal is recorded to an external branch whose commit times "
              + "cannot be backdated, so this row was different at that moment. Rewriting a row "
@@ -234,13 +341,44 @@ export function verify() {
   }
 
   const t = tip();
+  // Contiguous runs, so a reader sees "35,428–36,147" rather than 600 numbers.
+  const ranges = [];
+  for (const m of contentMismatches) {
+    const last = ranges[ranges.length - 1];
+    if (last && m.seq === last.toSeq + 1) { last.toSeq = m.seq; last.count++; last.lastAt = m.t; }
+    else ranges.push({ fromSeq: m.seq, toSeq: m.seq, count: 1, firstAt: m.t, lastAt: m.t, type: m.type });
+  }
+
   return {
-    ok: true, verified: checked, unchained,
+    // Linkage held all the way through, so nothing was removed or reordered;
+    // but rows whose content no longer matches their own hash mean the archive
+    // does not fully verify, and that is reported as failure rather than
+    // softened into a warning.
+    ok: contentMismatches.length === 0,
+    verified: checked, unchained,
     chainStartsAt: firstChainedIndex >= 0 ? all[firstChainedIndex].seq : null,
+    // Always reported, pass or fail. These used to be omitted on failure, so a
+    // broken chain showed the reader an em dash where the tip should be and a
+    // literal "Break at #?" — the interface losing its nerve at the exact
+    // moment it had the most to explain.
     tipSeq: t ? t.seq : null, tipHash: t ? t.h : null,
     anchored: !!anchor,
+    linkageIntact: true,
+    unverifiableRows: contentMismatches.length,
+    unverifiableRanges: ranges.slice(0, 50),
+    firstUnverifiableSeq: contentMismatches.length ? contentMismatches[0].seq : null,
+    lastUnverifiableSeq: contentMismatches.length ? contentMismatches[contentMismatches.length - 1].seq : null,
     sealsChecked: seals.filter(s => bySeq.has(s.seq)).length,
     sealsOutsideWindow: seals.filter(s => !bySeq.has(s.seq)).length,
+    reason: contentMismatches.length ? "content hash mismatch" : null,
+    means: contentMismatches.length
+      ? contentMismatches.length + " row(s) do not match the hash stored beside them. Every row still "
+        + "links to the one before it and no sequence number is missing, so nothing has been removed "
+        + "or reordered — what is lost is the cryptographic attestation of those rows' contents. "
+        + "A content mismatch is consistent with an edit AND with a fault on the write path, and this "
+        + "endpoint does not decide which: check the affected sequences against the errata below, the "
+        + "published seals, and the external witness log, and reach your own conclusion."
+      : "Every retained row links to the one before it and matches its own hash.",
     note: unchained
       ? unchained + " row(s) predate hash-chaining and are reported as unchained rather than counted as verified."
       : "Every retained row links to the one before it."
@@ -253,13 +391,36 @@ export function verify() {
  */
 export function seal() {
   const v = verify();
-  if (!v.ok) return { ok: false, error: "refusing to seal a broken chain", detail: v };
+  // ── Seal on a linkage failure, not on a content one ────────
+  //
+  // This used to refuse on any verification failure at all. The reasoning was
+  // sound — do not publish a checkpoint for a chain you cannot stand behind —
+  // but the consequence was not: when 600 rows stopped matching their hashes,
+  // sealing stopped too, and the archive went 25 hours with no new external
+  // attestation. Every hour in that state was an hour of NEW, perfectly good
+  // rows accumulating with nothing outside the service vouching for them.
+  //
+  // That is backwards. The seals are the part an operator cannot forge after
+  // the fact, so a damaged archive needs them more than a healthy one, not
+  // less. A broken linkage is different: if the order is in question then the
+  // tip is not meaningfully the tip, and sealing it would assert something
+  // untrue. So: refuse on linkage, proceed on content, and record on the seal
+  // itself exactly how much of the chain it is willing to speak for.
+  if (v.linkageIntact === false) {
+    return { ok: false, error: "refusing to seal a chain whose linkage is broken", detail: v };
+  }
   const t = tip();
   if (!t) return { ok: false, error: "nothing to seal yet" };
   const seals = readJson(SEALS_FILE, []);
   const last = seals[seals.length - 1];
   if (last && last.seq === t.seq) return { ok: true, unchanged: true, seal: last };
-  const s = { seq: t.seq, hash: t.h, count: v.verified, at: new Date().toISOString() };
+  const s = {
+    seq: t.seq, hash: t.h, count: v.verified, at: new Date().toISOString(),
+    // Carried so a reader of the seal file alone can see that this checkpoint
+    // was taken over an archive with known unverifiable rows, rather than
+    // discovering it later and wondering what the seal was worth.
+    ...(v.unverifiableRows ? { unverifiableRows: v.unverifiableRows } : {})
+  };
   seals.push(s);
   // Keep it small enough to publish comfortably; the oldest seals matter most
   // for old disputes, so drop from the middle rather than the head.
