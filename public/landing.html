@@ -338,7 +338,7 @@
     <div><div class="k">Objects tracked</div><div class="v" id="s-obj">—</div></div>
     <div><div class="k">Catalogue source</div><div class="v sm" id="s-src">—</div></div>
     <div><div class="k">Archived events</div><div class="v" id="s-arc">—</div></div>
-    <div><div class="k">Archive integrity</div><div class="v sm on" id="s-ver">—</div></div>
+    <div><div class="k">Archive integrity</div><div class="v sm on" id="s-ver">Checking…</div></div>
   </div>
 </div></header>
 
@@ -415,12 +415,14 @@
   <div class="rec">
     <div class="card reveal">
       <h3>Archive integrity</h3>
-      <p class="sub">Each row carries the hash of the row before it. Verification walks the whole chain and names the first row that does not reconcile.</p>
+      <p class="sub">Each row carries the hash of the row before it. Verification walks the whole chain and reports every row that does not reconcile, and whether the order of the archive is intact or only the contents of particular rows are in question.</p>
       <div id="rec-status" style="margin-bottom:15px">
         <span class="pill warm"><i></i> Checking…</span>
       </div>
       <dl class="kv">
         <dt>Rows verified</dt><dd id="rec-verified">—</dd>
+        <dt id="rec-unver-t" hidden>Rows unverified</dt><dd id="rec-unver" hidden>—</dd>
+        <dt id="rec-unchained-t" hidden>Predate chaining</dt><dd id="rec-unchained" hidden>—</dd>
         <dt>Chain tip</dt><dd id="rec-tipseq">—</dd>
         <dt>History spans</dt><dd id="rec-span">—</dd>
         <dt>Seals published</dt><dd id="rec-seals">—</dd>
@@ -826,22 +828,78 @@ const relTime = (iso) => {
   }
   countTo($("s-arc"), j.archive?.rows ?? 0);
 
-  const ok = !!j.integrity?.ok;
+  /* ---- integrity: four distinct states, never a placeholder ----
+     This read "Break at #" + tipSeq, which was wrong twice over. tipSeq is the
+     TIP of the chain, not the location of any break, so it named an innocent
+     row; and when verification failed early the field was absent entirely, so
+     the page rendered the literal string "Break at #?" — announcing a broken
+     archive and then declining to say where, which is the least trustworthy
+     thing an integrity indicator can do.
+
+     There are four things that can be true and they are not interchangeable:
+     the check has not answered yet, it could not be reached, rows were removed
+     or reordered, or rows are present and ordered but their contents no longer
+     match their hashes. Only the third and fourth are integrity failures, and
+     they are not the same failure. */
+  const ig = j.integrity || {};
   const vEl = $("s-ver");
-  vEl.textContent = ok ? "Chain verified" : "Break at #" + (j.integrity?.tipSeq ?? "?");
-  if (!ok) vEl.classList.remove("on");
+  let heroText, pill;
+
+  if (ig.ok) {
+    heroText = "Chain verified";
+    pill = '<span class="pill ok"><i></i> Chain verified</span>';
+  } else if (ig.linkageIntact === false) {
+    // The serious one: the order of the archive is in question.
+    heroText = ig.seq != null ? "Order break at #" + ig.seq : "Order break";
+    pill = '<span class="pill bad"><i></i> Rows removed or reordered — '
+         + esc(ig.reason || "linkage break") + '</span>';
+  } else if (ig.unverifiableRows > 0) {
+    // Present and correctly ordered, but their contents are no longer attested.
+    // Stated as a proportion because "chain broken" gave a reader no way to
+    // tell 600 rows from 37,971 of them.
+    const bad = ig.unverifiableRows;
+    const total = (ig.verified || 0) + bad;
+    const range = ig.firstUnverifiableSeq != null
+      ? " (#" + ig.firstUnverifiableSeq
+        + (ig.lastUnverifiableSeq !== ig.firstUnverifiableSeq ? "–#" + ig.lastUnverifiableSeq : "") + ")"
+      : "";
+    heroText = bad.toLocaleString() + " rows unverified";
+    pill = '<span class="pill warm"><i></i> ' + bad.toLocaleString() + " of " + total.toLocaleString()
+         + " rows unverified" + esc(range) + " · order intact</span>";
+  } else {
+    // Reached the service but it did not return a verdict we can render. Say
+    // so rather than picking whichever of "verified" or "broken" is nearer.
+    heroText = "Verification unavailable";
+    pill = '<span class="pill warm"><i></i> Verification unavailable</span>';
+  }
+
+  vEl.textContent = heroText;
+  if (!ig.ok) vEl.classList.remove("on");
 
   /* ---- integrity card ---- */
-  $("rec-status").innerHTML = ok
-    ? '<span class="pill ok"><i></i> Chain verified</span>'
-    : '<span class="pill bad"><i></i> Chain broken — ' + esc(j.integrity?.reason || "unreconciled row") + '</span>';
-  $("rec-verified").textContent = (j.integrity?.verified ?? 0).toLocaleString();
-  $("rec-tipseq").textContent  = j.integrity?.tipSeq != null ? "#" + j.integrity.tipSeq : "—";
+  $("rec-status").innerHTML = pill;
+  /* Show the whole accounting. "Rows verified: 35,427" beside "Archive rows:
+     41,285" looked like 5,858 rows had gone missing, when in fact the shortfall
+     was rows that predate hash-chaining plus rows whose contents no longer
+     reconcile — two different things, neither of them a disappearance. A number
+     that invites a wrong inference is worse than one that explains itself. */
+  const totalRows = j.archive?.rows ?? 0;
+  $("rec-verified").textContent = (ig.verified ?? 0).toLocaleString()
+    + (totalRows ? " of " + totalRows.toLocaleString() : "");
+  const showKv = (k, n) => {
+    const dt = $("rec-" + k + "-t"), dd = $("rec-" + k);
+    if (!n) { dt.hidden = dd.hidden = true; return; }
+    dt.hidden = dd.hidden = false;
+    dd.textContent = n.toLocaleString();
+  };
+  showKv("unver", ig.unverifiableRows || 0);
+  showKv("unchained", ig.unchained || 0);
+  $("rec-tipseq").textContent  = ig.tipSeq != null ? "#" + ig.tipSeq : "—";
   $("rec-span").textContent    = j.archive?.spanDays
     ? j.archive.spanDays.toFixed(1) + " days" : "just started";
   $("rec-seals").textContent   = (j.archive?.seals ?? 0).toLocaleString();
   $("rec-sealat").textContent  = relTime(j.archive?.lastSealAt);
-  $("rec-tip").textContent     = j.integrity?.tipHash || "—";
+  $("rec-tip").textContent     = ig.tipHash || "—";
 
   /* ---- conjunction bands ---- */
   const b = j.conjunctions?.bands || {};
@@ -849,13 +907,9 @@ const relTime = (iso) => {
   const setBand = (k, key) => {
     const n = Number(b[key] || 0);
     $("bc-" + k).textContent = n.toLocaleString();
-    // Set the width directly. This used to sit inside requestAnimationFrame,
-    // which does NOT fire in a background tab — so anyone who opened this page
-    // in a new tab saw the counts with no bars until they focused it, on a
-    // section whose whole job is to show the numbers. The snapshot fetch
-    // already resolves long after first paint, so the CSS transition still
-    // animates without the extra frame.
-    $("bf-" + k).style.width = (100 * n / max) + "%";
+    // rAF so the width transition actually runs rather than being applied
+    // in the same frame the element is first painted.
+    requestAnimationFrame(() => { $("bf-" + k).style.width = (100 * n / max) + "%"; });
   };
   setBand("c", "CRITICAL"); setBand("h", "HIGH");
   setBand("m", "MODERATE"); setBand("l", "LOW");
