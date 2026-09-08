@@ -163,7 +163,11 @@ test("a rewritten row is caught even when the chain is rebuilt around it", () =>
     ledger.reload();
     const v = ledger.verify();
     assert.equal(v.ok, false);
-    assert.match(v.reason, /row altered/i);
+    assert.match(v.reason, /content hash mismatch/i);
+    assert.equal(v.unverifiableRows, 1, "the naive edit must be counted, not merely noticed");
+    assert.equal(v.linkageIntact, true,
+      "a body edit leaves the ordering alone. Reporting that separately is what lets a reader "
+      + "tell 'this row's contents are in question' from 'rows were removed or reordered'");
   });
 
   check("a thorough edit — rewriting every hash after it — is caught by the seal", () => {

@@ -885,6 +885,22 @@ api.get("/snapshot", async (req, res) => {
         ok: v.ok, tipSeq: v.tipSeq, tipHash: v.tipHash,
         verified: v.verified, unchained: v.unchained,
         reason: v.reason || null,
+        // ── Enough for a reader to size the problem ──────────
+        // This used to carry only ok/reason, so a failure reached the page as
+        // the bare word "broken" with no scale attached. Six unverifiable rows
+        // and the entire archive looked identical from here, and the interface
+        // had no choice but to assume the worst.
+        //
+        // `linkageIntact` is the distinction that matters most: whether rows
+        // were removed or reordered, or whether they are all present and in
+        // order with some contents no longer attested. Those are different
+        // failures with different remedies and they should never share a label.
+        linkageIntact: v.linkageIntact ?? null,
+        unverifiableRows: v.unverifiableRows ?? 0,
+        firstUnverifiableSeq: v.firstUnverifiableSeq ?? null,
+        lastUnverifiableSeq: v.lastUnverifiableSeq ?? null,
+        seq: v.seq ?? null,
+        means: v.means || null,
         checkYourself: "/api/v1/archive/verify",
         witnessLog: "https://github.com/mnbresearch/orbitiq/blob/witness/witness/log.jsonl",
         limits: "Tamper-evident, not tamper-proof. GitHub is the notary, so this is exactly as "
