@@ -123,6 +123,13 @@ jobs:
           EOF
 
       - name: Check how long since screening last published
+        # Runs even when the seal check has already failed. These are two
+        # independent pipelines and a fault in one must not hide the state of
+        # the other: on the first live run the stale-seal failure skipped this
+        # step entirely, which would have meant a dead screening feed going
+        # unreported behind an unrelated alarm - the precise failure mode this
+        # workflow exists to prevent.
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
