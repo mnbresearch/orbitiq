@@ -60,6 +60,68 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Check how long since the archive was last sealed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          node --input-type=module <<'EOF'
+          // ── Why the seals need their own watchdog ─────────────
+          // A seal is the part of this archive an operator cannot forge after
+          // the fact, so a gap in sealing is a gap in the only evidence that
+          // does not depend on trusting us.
+          //
+          // Sealing stopped for 25 hours on 7 September 2026 and nothing said
+          // so. It stopped for a reason that looked like caution — seal()
+          // refused to certify a chain that did not verify — but the effect was
+          // that every row appended during those 25 hours went unattested,
+          // precisely when the archive was already damaged and most needed an
+          // external record. The refusal was visible only to anyone who
+          // happened to read the seal file and compare timestamps.
+          //
+          // Publishing is driven by row count rather than the clock, so the
+          // tolerance here is deliberately generous: a quiet archive is not a
+          // broken one, and an alarm that fires on a slow day gets muted.
+          import { assess, describeAge } from "./src/freshness.js";
+
+          const url = `https://api.github.com/repos/${process.env.REPO}/contents/backup/ledger-seals.json?ref=data-backup`;
+          let seals = null, detail = "";
+          try {
+            const r = await fetch(url, {
+              headers: { Accept: "application/vnd.github+json",
+                         Authorization: `Bearer ${process.env.GH_TOKEN}`,
+                         "User-Agent": "orbitiq-staleness" },
+              signal: AbortSignal.timeout(20000)
+            });
+            if (r.ok) {
+              const j = await r.json();
+              seals = JSON.parse(Buffer.from(j.content, "base64").toString("utf8"));
+            } else detail = `HTTP ${r.status}`;
+          } catch (e) { detail = e.message; }
+
+          if (!Array.isArray(seals) || !seals.length) {
+            console.log(`::warning::Could not read the seal file (${detail || "no seals"}). `
+              + `Not treated as a failure: this says nothing about the archive either way.`);
+            process.exit(0);
+          }
+
+          const newest = seals[seals.length - 1];
+          const f = assess({ generatedAt: newest.at, staleAfterHours: 12, downAfterHours: 48 });
+          console.log(`newest seal: #${newest.seq} at ${newest.at} (${seals.length} seals held)`);
+          if (newest.unverifiableRows) {
+            console.log(`::warning::The newest seal records ${newest.unverifiableRows} unverifiable row(s). `
+              + `Sealing is continuing, but it is not vouching for those rows.`);
+          }
+          if (f.state === "fresh") { console.log(`::notice::Sealing is current (${f.summary}).`); process.exit(0); }
+
+          console.log(`::error::The archive has not been sealed for `
+            + `${f.ageHours == null ? "an unknown time" : describeAge(f.ageHours)}. `
+            + `Every row appended since then has no external checkpoint behind it, which is the `
+            + `one piece of evidence here that does not rest on trusting the operator. `
+            + `Check /api/v1/archive/verify — sealing halts by design when the chain's linkage breaks.`);
+          process.exit(1);
+          EOF
+
       - name: Check how long since screening last published
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
