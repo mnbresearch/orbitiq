@@ -419,6 +419,12 @@
       <div id="rec-status" style="margin-bottom:15px">
         <span class="pill warm"><i></i> Checking…</span>
       </div>
+      <!-- Shown only when rows are failing verification. Says whether a dated,
+           chained record already accounts for exactly those rows — which is the
+           difference between a fault the operator disclosed before you asked
+           and one you have just discovered. -->
+      <div id="rec-disclosure" hidden
+           style="margin:-4px 0 15px;padding:11px 13px;border-radius:9px;font-size:12.5px;line-height:1.55"></div>
       <dl class="kv">
         <dt>Rows verified</dt><dd id="rec-verified">—</dd>
         <dt id="rec-unver-t" hidden>Rows unverified</dt><dd id="rec-unver" hidden>—</dd>
@@ -864,8 +870,20 @@ const relTime = (iso) => {
         + (ig.lastUnverifiableSeq !== ig.firstUnverifiableSeq ? "–#" + ig.lastUnverifiableSeq : "") + ")"
       : "";
     heroText = bad.toLocaleString() + " rows unverified";
-    pill = '<span class="pill warm"><i></i> ' + bad.toLocaleString() + " of " + total.toLocaleString()
-         + " rows unverified" + esc(range) + " · order intact</span>";
+    // Documented and still matching is a materially different claim from
+    // documented once and drifted since, and the pill carries the difference.
+    // A record that no longer covers what is failing must not soften the
+    // colour — that is the shape a disclosure takes when it starts being used
+    // as cover for the next thing.
+    const covered = j.integrity?.documented?.accountsForObserved === true;
+    pill = '<span class="pill ' + (covered ? "warm" : "bad") + '"><i></i> '
+         + bad.toLocaleString() + " of " + total.toLocaleString()
+         + " rows unverified" + esc(range) + " · order intact"
+         // "undisclosed" rather than "not covered by any record", because a
+         // record may well exist and simply not describe this. The banner below
+         // makes that distinction; the pill only needs to avoid asserting the
+         // stronger claim.
+         + (covered ? " · disclosed" : " · undisclosed") + "</span>";
   } else {
     // Reached the service but it did not return a verdict we can render. Say
     // so rather than picking whichever of "verified" or "broken" is nearer.
@@ -894,6 +912,41 @@ const relTime = (iso) => {
   };
   showKv("unver", ig.unverifiableRows || 0);
   showKv("unchained", ig.unchained || 0);
+
+  /* ---- the disclosure line ----
+     Only rendered when something is actually failing. Two states, and the
+     wording is not interchangeable: either a dated record in the same chain
+     already named these exact rows, or it did not. The second case gets no
+     softening language, because the whole value of having published the first
+     one is that it cannot be stretched to cover a later surprise. */
+  const doc = ig.documented || {};
+  const dEl = $("rec-disclosure");
+  if (!(ig.unverifiableRows > 0)) {
+    dEl.hidden = true;
+  } else {
+    dEl.hidden = false;
+    const good = doc.accountsForObserved === true;
+    dEl.style.background = good ? "rgba(217,164,65,.09)" : "rgba(226,86,86,.10)";
+    dEl.style.border = "1px solid " + (good ? "rgba(217,164,65,.28)" : "rgba(226,86,86,.32)");
+    dEl.style.color = good ? "#d9c9a8" : "#f0b9b9";
+    // Three heads, not two. "A record exists but does not cover this" and "no
+    // record exists at all" are different situations, and collapsing them would
+    // misdescribe the archive in the one state where precision matters most —
+    // the state where a genuine disclosure is sitting right there, tempting the
+    // reader to assume it applies.
+    const head = good
+      ? "Disclosed by us, before you asked."
+      : doc.present
+        ? "A record exists, but it does not cover this."
+        : "Not accounted for by any record we have published.";
+    const where = good && doc.seq != null
+      ? ' The record sits at sequence #' + doc.seq + " in this same chain, so its date is fixed by "
+        + "the rows that came after it and cannot have been written to fit."
+      : "";
+    dEl.innerHTML = "<strong>" + esc(head) + "</strong> " + esc(doc.note || "") + esc(where)
+      + ' <a href="/api/v1/archive/verify" style="color:inherit;text-decoration:underline">'
+      + "See integrity.documented</a>.";
+  }
   $("rec-tipseq").textContent  = ig.tipSeq != null ? "#" + ig.tipSeq : "—";
   $("rec-span").textContent    = j.archive?.spanDays
     ? j.archive.spanDays.toFixed(1) + " days" : "just started";
