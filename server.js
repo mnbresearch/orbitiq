@@ -16,6 +16,7 @@ import { hohmann, launchPlan, congestion, detectManeuvers, LAUNCH_SITES } from "
 import * as intel from "./src/intel.js";
 import * as coverage from "./src/coverage.js";
 import * as freshness from "./src/freshness.js";
+import * as disclosure from "./src/disclosure.js";
 import { elementAgeDays } from "./src/orbitstate.js";
 
 // How stale the elements a sweep ran against were. A pass over a four-day-old
@@ -373,7 +374,6 @@ async function runScreening(org, hours, thresholdKm, opts = {}) {
       note: "No published screen for these parameters yet. Screening runs in the "
           + "offline worker; this instance never computes one on the request path." };
   }
-
 
   const job = (async () => {
     let sats = capForScreening(await getSatellites(), org);
@@ -737,6 +737,10 @@ api.get("/archive/verify", (req, res) => {
   const v = ledger.verify();
   res.json({
     ...v,
+    // Whether a dated, chained record already accounts for whatever is failing.
+    // This is the endpoint the erratum itself names, so it has to answer the
+    // question the erratum invites rather than merely repeating its text.
+    documented: documentedUnverifiable(v),
     seals: ledger.seals().slice(-5),
     anchor: ledger.anchor(),
     witness: {
@@ -753,7 +757,6 @@ api.get("/archive/verify", (req, res) => {
     published: "Seals are mirrored to the data-backup branch of github.com/mnbresearch/orbitiq. "
              + "Note that branch is force-pushed flat by design and is NOT evidence — the witness "
              + "branch and the Actions run history are.",
-
     limits: "Tamper-evident, not tamper-proof, with GitHub as the notary — exactly as strong as "
           + "trusting GitHub's timestamps, no more. It shows a hash was publicly observable at a "
           + "given time. It is not a signature, does not attest who wrote the rows, and is not a "
@@ -901,6 +904,15 @@ api.get("/snapshot", async (req, res) => {
         lastUnverifiableSeq: v.lastUnverifiableSeq ?? null,
         seq: v.seq ?? null,
         means: v.means || null,
+        // ── Is this failure one we have already owned up to? ──
+        // A failure the operator disclosed, dated and sealed BEFORE you asked
+        // is a different thing from one discovered by your own verification
+        // run, and a reader deserves to know which they are looking at. The
+        // comparison is published rather than the record alone, because an
+        // erratum that no longer matches the rows failing today is worse than
+        // no erratum at all — it reads as an explanation while covering
+        // something it never described.
+        documented: documentedUnverifiable(v),
         checkYourself: "/api/v1/archive/verify",
         witnessLog: "https://github.com/mnbresearch/orbitiq/blob/witness/witness/log.jsonl",
         limits: "Tamper-evident, not tamper-proof. GitHub is the notary, so this is exactly as "
@@ -940,9 +952,20 @@ api.get("/snapshot", async (req, res) => {
       errata: (() => {
         try {
           const es = ledger.query({ type: "erratum", limit: 50 }).events || [];
-          return es.map(e => ({ t: e.t, correctsModel: e.correctsModel, replacedBy: e.replacedBy,
-                                appliesToRowsUpToSeq: e.appliesToRowsUpToSeq,
-                                direction: e.direction, summary: e.summary }));
+          return es.map(e => ({ t: e.t, seq: e.seq ?? null,
+                                correctsModel: e.correctsModel ?? null,
+                                correctsDefect: e.correctsDefect ?? null,
+                                replacedBy: e.replacedBy ?? null,
+                                appliesToRowsUpToSeq: e.appliesToRowsUpToSeq ?? null,
+                                coversSeqFrom: e.coversSeqFrom ?? null,
+                                coversSeqTo: e.coversSeqTo ?? null,
+                                rowsAtRecord: e.rowsAtRecord ?? null,
+                                direction: e.direction, summary: e.summary,
+                                cause: e.cause ?? null,
+                                // Published because a correction a reader cannot test is a
+                                // press release. This states, in advance, the observation
+                                // that would show the record no longer fits.
+                                whatWouldFalsifyThis: e.whatWouldFalsifyThis ?? null }));
         } catch { return []; }
       })(),
       service: {
@@ -970,7 +993,6 @@ api.get("/archive/proof", requireWs, requirePlan("operator"), (req, res) => {
     limit: Math.min(parseInt(req.query.limit, 10) || 2000, 5000)
   }));
 });
-
 api.get("/archive/events", requirePlan("operator"), (req, res) => {
   res.json(ledger.query({
     type: req.query.type, org: req.query.org,
@@ -1490,6 +1512,9 @@ api.get("/status", async (req, res) => {
     archive: ledger.stats(),
     backup: backup.status(),
     mail: mailer.status(),
+    // Config health, not config values. A misconfigured secret is invisible
+    // until the moment it matters, so say plainly whether the archive can be
+    // protected at all — without ever echoing the key.
     secrets: {
       backupKeyConfigured: backup.canProtectSecrets?.() === true,
       note: backup.canProtectSecrets?.() === true
@@ -1549,7 +1574,6 @@ api.post("/admin/scan-all", requireAdmin, async (req, res) => {
   res.json({ ok: true });
 });
 api.post("/admin/workspaces/:id/plan", requireAdmin, (req, res) => {
-  backupSoon("plan change");
   const w = store.setPlan(req.params.id, req.body?.plan);
   w ? res.json({ ok: true, id: w.id, plan: w.plan }) : res.status(404).json({ error: "Workspace not found" });
 });
@@ -1738,6 +1762,20 @@ function recordCovarianceErratum() {
   }
 }
 
+// Reads the errata out of the ledger and hands them to the pure comparison in
+// src/disclosure.js. The judgement lives there so it can be tested against a
+// deliberately damaged archive without starting a server; this only does the
+// I/O. A failure to read the ledger must not throw inside a public route, and
+// it must not silently produce "documented" either — assessDisclosure with no
+// errata returns present:false, which is the correct reading of "we cannot show
+// you a record".
+function documentedUnverifiable(v) {
+  let errata = [];
+  try { errata = ledger.query({ type: "erratum", limit: 200 }).events || []; }
+  catch { errata = []; }
+  return disclosure.assessDisclosure(v, errata);
+}
+
 // Global intelligence sweep — feeds the append-only ledger regardless of
 // whether any customer is watching. This is the compounding data asset.
 async function intelligenceSweep() {
@@ -1747,6 +1785,10 @@ async function intelligenceSweep() {
     // Append the cov-v1 erratum before writing any new rows, so the correction
     // sits ahead of the first row produced by the corrected model.
     recordCovarianceErratum();
+    // Same discipline for the serialisation defect: the admission is dated by
+    // its position in the chain, so it must be written as soon as the condition
+    // is observable rather than backfilled later at a convenient sequence.
+    disclosure.recordSerialisationErratum(ledger);
     const byId = new Map(sats.map(s => [s.id, s]));
     // 1. conjunctions (global screening, with Pc)
     const d = await runScreening(null, 3, 10);
@@ -1963,7 +2005,6 @@ everyNonOverlapping(async () => {
   if (r.ok && !r.unchanged) console.log(`ledger: sealed at seq ${r.seal.seq} (${r.seal.hash})`);
   if (!r.ok && r.error !== "nothing to seal yet") console.error("ledger seal refused:", r.error);
 }, 60 * 60 * 1000, "ledger seal");
-
 everyNonOverlapping(intelligenceSweep, 6 * 60 * 60 * 1000, "intelligence sweep");
 // stagger heavy boot work so the instance passes health checks first
 setTimeout(snapshotPopulation, 90 * 1000);
