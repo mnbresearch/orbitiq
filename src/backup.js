@@ -134,7 +134,10 @@ const FILES = [
     legacyRemote: "backup/elements-history.json", gzip: true }
 ];
 
-let state = { enabled: !!TOKEN, restored: 0, lastBackupAt: null, lastError: null };
+// `unreadable` holds remote paths this boot could not decrypt. backup() treats
+// them as untouchable: reused by sha, never replaced. Losing the ability to
+// READ a backup is bad; silently destroying it as a consequence is worse.
+let state = { enabled: !!TOKEN, restored: 0, lastBackupAt: null, lastError: null, unreadable: new Set() };
 
 /**
  * Backup health, stated as a verdict rather than left to be inferred.
@@ -153,8 +156,13 @@ export const status = () => {
   const ageMin = state.lastBackupAt
     ? (Date.now() - new Date(state.lastBackupAt).getTime()) / 60000 : null;
   const refusing = /^backup REFUSED/.test(state.lastError || "");
+  // Ranked above "failing": an unreadable secret archive is not a transient
+  // error, it is an account-loss event waiting for the next cold boot, and it
+  // needs a different action (find the old key) from a retry.
+  const unreadable = [...state.unreadable];
 
   const health = !TOKEN ? "unprotected"
+    : unreadable.length ? "unreadable"
     : refusing ? "refusing"
     : state.lastError ? "failing"
     : !state.lastBackupAt ? "never-run"
@@ -163,12 +171,19 @@ export const status = () => {
 
   return {
     ...state,
+    unreadable,
     health,
     lastBackupAgeMinutes: ageMin == null ? null : Math.round(ageMin),
     means: {
       unprotected: "No backup token is configured. The archive exists only on this instance's "
                  + "disk, which is wiped on every redeploy. Everything this product claims "
                  + "rests on that one file.",
+      unreadable: "This instance could not decrypt " + unreadable.join(", ") + ". Those backups "
+                + "are being preserved untouched rather than overwritten, so nothing is lost yet — "
+                + "but the accounts and workspace keys they hold cannot be restored until the key "
+                + "that sealed them is available again. This is what a rotated ORBITIQ_BACKUP_KEY "
+                + "looks like: set the previous key, let one boot restore, then rotate with the "
+                + "service running so the archive is re-sealed under the new key.",
       refusing: "The backup is refusing to publish because the local archive is smaller than "
               + "the backed-up one. That guard prevents a blank boot from destroying the "
               + "record, but it also means the two have diverged and someone must look.",
@@ -247,17 +262,38 @@ export async function restore() {
       }
       if (usedLegacy) console.log(`backup: restored ${f.legacyRemote} (uncompressed legacy copy)`);
       if (f.secret) {
+        // ── Could not read it? Then never write over it. ──────
+        //
+        // The ledger has an append-only guard that refuses to publish a
+        // shorter archive over a longer one. These two files had no equivalent,
+        // and a key rotation is exactly the event that exposes the gap:
+        //
+        //   1. cold boot with a new ORBITIQ_BACKUP_KEY, so the blobs sealed
+        //      with the old one no longer decrypt
+        //   2. the disk is ephemeral, so there is no local copy either — the
+        //      service comes up with no workspaces and bootstraps a fresh admin
+        //   3. the LEDGER restored fine, so it has not shrunk, so the
+        //      append-only guard stays quiet
+        //   4. the next backup seals those empty files with the NEW key and
+        //      force-pushes them over the good ones
+        //
+        // Every workspace API key and user account, gone, with nothing having
+        // looked wrong at any step. Marking the file unreadable here makes
+        // backup() reuse the existing remote blob instead of replacing it, so
+        // the ciphertext survives until someone restores the right key.
         if (!BACKUP_KEY) {
           console.error(`backup: cannot restore ${f.remote} — ORBITIQ_BACKUP_KEY is not set.`);
           state.lastError = "restore: secret-bearing archive needs ORBITIQ_BACKUP_KEY";
+          state.unreadable.add(f.remote);
           continue;
         }
-        // Decrypt, and let a failure be loud. Silently writing an undecryptable
-        // blob to disk would corrupt the live store with ciphertext.
         try { text = unseal(text); }
         catch (e) {
-          console.error(`backup: ${f.remote} failed to decrypt (${e.message}) — leaving local file untouched.`);
+          console.error(`backup: ${f.remote} failed to decrypt (${e.message}). The backup copy will `
+            + `NOT be overwritten — if ORBITIQ_BACKUP_KEY was rotated, restore the previous key to `
+            + `recover these accounts, then rotate deliberately with the service running.`);
           state.lastError = "restore: decrypt failed for " + f.remote;
+          state.unreadable.add(f.remote);
           continue;
         }
       }
@@ -373,6 +409,18 @@ export async function backup() {
     let ledgerLines = null;
 
     for (const f of FILES) {
+      // Restore could not read this one. Whatever is on the branch is the only
+      // surviving copy, so keep it exactly as it is — referenced by its own
+      // sha, so the tree still carries it and it is neither dropped nor
+      // replaced by whatever this instance happens to hold.
+      if (state.unreadable.has(f.remote)) {
+        if (remoteShas[f.remote]) {
+          entries.push({ path: f.remote, mode: "100644", type: "blob", sha: remoteShas[f.remote] });
+          skipped++;
+          console.warn(`backup: preserving ${f.remote} unchanged — this instance could not decrypt it`);
+        }
+        continue;
+      }
       let text;
       try { text = fs.readFileSync(f.local, "utf8"); } catch { continue; }
       if (f.secret) {
