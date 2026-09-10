@@ -53,10 +53,50 @@ app.set("trust proxy", 1);
 app.use(express.json({ limit: "100kb" }));
 // v10: the landing page is the front door; the console lives at /app
 const PUBLIC_DIR = path.join(__dirname, "public");
-app.get("/", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "landing.html")));
-app.get(["/app", "/console"], (req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
-app.use(express.static(PUBLIC_DIR, { index: false }));
-app.use("/vendor/three", express.static(path.join(__dirname, "node_modules", "three", "build")));
+
+// ---------- cache headers: the free tier's real defence ----------
+//
+// This runs on a free instance that sleeps after 15 minutes and takes ~50 s to
+// wake. Everything served with `max-age=0` — which is what sendFile and
+// express.static do by default — has to come from that instance, every time.
+// So the first visitor after a quiet spell waits nearly a minute for a page
+// whose HTML has not changed since the last deploy.
+//
+// The fix is not to keep the instance awake (that spends the 750-hour monthly
+// quota to serve pages that could have been cached). It is to stop asking the
+// instance for things that do not change:
+//
+//   * the marketing HTML is a static shell — every live number on it arrives
+//     later from /api/v1/snapshot, so caching the shell cannot show stale data
+//   * `stale-while-revalidate` lets a cache serve the known-good copy INSTANTLY
+//     and refresh in the background, which is exactly the sleeping-origin case:
+//     the reader sees the page now, and the instance wakes on its own time
+//   * the vendor bundles are versioned library builds that never change
+//
+// Auth surfaces are deliberately excluded: a shared edge cache should never
+// hold a page that a signed-in reader might be served from.
+const HTML_CACHE   = "public, max-age=300, stale-while-revalidate=604800";
+const ASSET_CACHE  = "public, max-age=3600, stale-while-revalidate=86400";
+const VENDOR_CACHE = "public, max-age=31536000, immutable";
+const PRIVATE_PAGES = /\/(login|admin)\.html$/;
+
+const sendPage = file => (req, res) => {
+  res.set("Cache-Control", PRIVATE_PAGES.test(file) ? "no-store" : HTML_CACHE);
+  res.sendFile(path.join(PUBLIC_DIR, file));
+};
+app.get("/", sendPage("landing.html"));
+app.get(["/app", "/console"], sendPage("index.html"));
+app.use(express.static(PUBLIC_DIR, {
+  index: false,
+  setHeaders: (res, filePath) => {
+    if (PRIVATE_PAGES.test(filePath)) res.set("Cache-Control", "no-store");
+    else if (filePath.endsWith(".html")) res.set("Cache-Control", HTML_CACHE);
+    else res.set("Cache-Control", ASSET_CACHE);
+  }
+}));
+app.use("/vendor/three", express.static(path.join(__dirname, "node_modules", "three", "build"), {
+  setHeaders: res => res.set("Cache-Control", VENDOR_CACHE)
+}));
 
 // ---------- SEO: robots + sitemap ----------
 // Search engines need to be told this host is indexable and that it belongs to
@@ -98,7 +138,9 @@ app.get("/sitemap.xml", (_req, res) => {
   );
 });
 
-app.use("/vendor/satellite", express.static(path.join(__dirname, "node_modules", "satellite.js", "dist")));
+app.use("/vendor/satellite", express.static(path.join(__dirname, "node_modules", "satellite.js", "dist"), {
+  setHeaders: res => res.set("Cache-Control", VENDOR_CACHE)
+}));
 
 const PORT = process.env.PORT || 3000;
 const api = express.Router();
@@ -129,6 +171,71 @@ api.use((req, res, next) => {
   }
   next();
 });
+// ---------- egress budget: the limit that is denominated in the right unit ----------
+//
+// The limiter above counts REQUESTS, and for most of this API that is the right
+// unit — the responses are a few kilobytes and 120/min is generous.
+//
+// The bulk exports break that assumption badly. /export/catalog.csv is ~465 KB
+// compressed, so a single IP staying politely inside the 120/min limit draws
+//
+//     120 x 465 KB = 55 MB per minute = ~80 GB per day
+//
+// against a free tier that includes 100 GB of bandwidth per MONTH. One scraper,
+// or one well-meaning integration polling for changes, exhausts the month in
+// about thirty hours and takes the site down with it. The request count never
+// goes above the limit, so nothing would have looked wrong.
+//
+// So heavy routes get a second budget denominated in bytes. It is deliberately
+// generous for a human (a hundred full catalogue pulls an hour) and fatal to a
+// hot loop. Paying workspaces are exempt: they are metered by daily calls, and
+// their egress is a business decision rather than an anonymous risk.
+// Tunable without a redeploy. The right number depends on traffic nobody has
+// seen yet, and discovering it should not cost a deploy — which on this tier
+// costs build minutes and an instance restart. Set ORBITIQ_EGRESS_MB=0 to
+// disable the cap entirely if it ever gets in the way of a real user.
+const EGRESS_WINDOW_MS = 60 * 60 * 1000;   // one hour
+const EGRESS_MB = (() => {
+  const raw = Number(process.env.ORBITIQ_EGRESS_MB);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 50;
+})();
+const EGRESS_BUDGET = EGRESS_MB * 1024 * 1024;
+const egressBuckets = new Map();
+
+const egressBudget = (req, res, next) => {
+  if (!EGRESS_BUDGET || req.workspace) return next();
+  const ip = req.ip || "?", now = Date.now();
+  if (egressBuckets.size > 5000) egressBuckets.clear();
+  let b = egressBuckets.get(ip);
+  if (!b || now - b.start > EGRESS_WINDOW_MS) { b = { start: now, bytes: 0 }; egressBuckets.set(ip, b); }
+
+  if (b.bytes >= EGRESS_BUDGET) {
+    const mins = Math.ceil((EGRESS_WINDOW_MS - (now - b.start)) / 60000);
+    res.set("Retry-After", String(mins * 60));
+    return res.status(429).json({
+      error: `Bulk export budget reached (${EGRESS_MB} MB/hour from one address).`,
+      // Say what the limit is FOR. A limit whose reason is unexplained gets
+      // worked around; this one exists to keep a free-tier site online.
+      why: "These exports are large and this service runs on a free tier with a "
+         + "monthly bandwidth allowance. The cap protects availability for "
+         + "everyone rather than rationing you specifically.",
+      retryInMinutes: mins,
+      betterOption: "Create a free workspace and use an API key for metered access, "
+                  + "or fetch the mirrored data straight from the repository — "
+                  + "https://github.com/mnbresearch/orbitiq/tree/data-mirror"
+    });
+  }
+
+  // Count what actually goes out, after compression, by watching the socket
+  // rather than trusting a declared Content-Length that streaming responses
+  // may never set.
+  const bump = n => { if (n > 0) b.bytes += n; };
+  const origWrite = res.write.bind(res), origEnd = res.end.bind(res);
+  res.write = (chunk, ...a) => { bump(chunk ? Buffer.byteLength(chunk) : 0); return origWrite(chunk, ...a); };
+  res.end   = (chunk, ...a) => { bump(chunk && typeof chunk !== "function" ? Buffer.byteLength(chunk) : 0); return origEnd(chunk, ...a); };
+  next();
+};
+
 const requirePlan = min => (req, res, next) => {
   const rank = req.workspace ? (store.PLANS[req.workspace.plan]?.rank ?? 0) : -1;
   const need = store.PLANS[min].rank;
@@ -971,7 +1078,11 @@ api.get("/snapshot", async (req, res) => {
       service: {
         // Being straight about the hosting is more credible than implying an
         // availability guarantee this tier cannot make.
-        tier: "free-tier hosted; the instance sleeps outside the keep-alive window",
+        // Sleeping is the intended state, not a degradation: holding the
+        // instance awake would spend a shared 750 h monthly quota to serve
+        // pages that cache perfectly well. The pages carry
+        // stale-while-revalidate so a reader gets them immediately either way.
+        tier: "free-tier hosted; the instance sleeps when idle and wakes on request (~50 s cold)",
         version: 8
       }
     };
@@ -1579,21 +1690,27 @@ api.post("/admin/workspaces/:id/plan", requireAdmin, (req, res) => {
 });
 
 // ---------- exports ----------
-api.get("/export/catalog.csv", async (req, res) => {
+// The catalogue changes when the upstream mirror refreshes, which is every few
+// hours — not per request. Fifteen minutes of caching turns a repeated pull
+// into an edge hit that never reaches this instance, which is the difference
+// between a scraper costing bandwidth and costing nothing.
+api.get("/export/catalog.csv", egressBudget, async (req, res) => {
   try {
     const sats = await getSatellites();
     const org = req.query.org && req.query.org !== "all" ? req.query.org : null;
     const rows = (org ? sats.filter(s => s.org === org) : sats)
       .map(s => [s.id, JSON.stringify(s.name), s.intl, s.org, s.incl, s.ecc, s.meanMotion, s.epoch].join(","));
+    res.set("Cache-Control", "public, max-age=900, stale-while-revalidate=3600");
     res.type("text/csv").send("norad_id,name,intl_designator,org,inclination_deg,eccentricity,mean_motion_rev_day,epoch\n" + rows.join("\n"));
   } catch (e) { res.status(502).json({ error: "Export failed", detail: e.message }); }
 });
 
-api.get("/export/conjunctions.csv", async (req, res) => {
+api.get("/export/conjunctions.csv", egressBudget, async (req, res) => {
   try {
     const org = req.query.org && req.query.org !== "all" ? req.query.org : null;
     const d = await runScreening(org, Math.min(parseFloat(req.query.hours) || 3, 12), Math.min(parseFloat(req.query.thresholdKm) || 10, 50));
     const rows = d.events.map(ev => [ev.tca, ev.missKm, ev.relVelKmS, ev.altKm, ev.risk, ev.a.id, JSON.stringify(ev.a.name), ev.b.id, JSON.stringify(ev.b.name)].join(","));
+    res.set("Cache-Control", "public, max-age=300, stale-while-revalidate=1800");
     res.type("text/csv").send("tca,miss_km,rel_vel_km_s,alt_km,risk,norad_a,name_a,norad_b,name_b\n" + rows.join("\n"));
   } catch (e) { res.status(502).json({ error: "Export failed", detail: e.message }); }
 });

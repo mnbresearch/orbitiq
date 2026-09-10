@@ -1,3 +1,30 @@
+# ============================================================
+# OrbitIQ on Render's free tier.
+#
+# ── Why buildFilter is here ──────────────────────────────────
+# autoDeploy defaults to on, so every push to main rebuilt and redeployed the
+# service. Over the first ten days of September that was 104 pushes — about
+# 10 a day — and a sample of 45 of them found 38% touched ONLY files the
+# running service never loads: tests, workflow YAML, documentation.
+#
+# That matters on a free tier for two separate reasons:
+#
+#   * Builds are metered. The free plan includes 500 pipeline minutes a month.
+#     At ~10 deploys a day, a third of them pointless, the month is spent on
+#     rebuilding a server whose code did not change.
+#
+#   * Every deploy restarts the instance. A restart drops the in-memory
+#     catalogue, re-runs the boot sequence, and briefly runs the old and new
+#     instance side by side — so it also costs instance-hours out of the 750 h
+#     monthly quota, which is shared by every free service in the workspace.
+#
+# So: commits that cannot change the running service no longer redeploy it.
+# CI still runs on those commits — tests are not skipped, only the deploy is.
+#
+# Note that changes to this file are always processed regardless of the filter,
+# and a manual deploy from the dashboard ignores it entirely. There is no way
+# for the filter to strand a change you actually want live.
+# ============================================================
 services:
   - type: web
     name: orbitiq
@@ -6,6 +33,17 @@ services:
     buildCommand: npm install && node scripts/make-sample-data.mjs
     startCommand: node server.js
     healthCheckPath: /api/health
+    buildFilter:
+      ignoredPaths:
+        # Test suite: run by GitHub Actions, never loaded by the server.
+        - test/**
+        # Workflow definitions run on GitHub's runners, not on this instance.
+        - .github/**
+        # Prose.
+        - "**/*.md"
+        - LICENSE
+        # Local scratch files that were never part of the deployed service.
+        - .gitignore
     envVars:
       - key: ORBITIQ_ADMIN_KEY
         generateValue: true
