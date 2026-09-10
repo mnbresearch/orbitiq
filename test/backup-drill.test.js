@@ -38,6 +38,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import zlib from "node:zlib";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "orbitiq-drill-"));
 process.env.ORBITIQ_DATA_DIR = tmp;
@@ -101,7 +102,11 @@ globalThis.fetch = async (url, opts = {}) => {
     git.branch = body.sha; return json(200, {});
   }
   if (u.includes("/git/blobs") && method === "POST") {
-    const content = Buffer.from(body.content, "base64").toString("utf8");
+    // Store the raw BYTES, not a utf8 string. The archive is gzipped now, and
+    // round-tripping binary through utf8 silently mangles it — a fake that did
+    // that would fail the drill for a reason that has nothing to do with the
+    // code under test.
+    const content = Buffer.from(body.content, "base64");
     const s = sha1(content); git.blobs.set(s, content); return json(201, { sha: s });
   }
   if (u.includes("/git/trees") && method === "POST") {
@@ -129,7 +134,16 @@ globalThis.fetch = async (url, opts = {}) => {
   if (u.includes("/contents/")) {
     const remote = decodeURIComponent(u.split("/contents/")[1].split("?")[0]);
     const files = branchFiles();
-    return remote in files ? json(200, files[remote]) : json(404, {});
+    if (!(remote in files)) return json(404, {});
+    const buf = Buffer.isBuffer(files[remote]) ? files[remote] : Buffer.from(String(files[remote]));
+    // Real GitHub serves raw bytes; restore() reads .gz through arrayBuffer()
+    // and everything else through text(), so the fake must offer both.
+    return {
+      ok: true, status: 200,
+      arrayBuffer: async () => buf,
+      text: async () => buf.toString("utf8"),
+      json: async () => JSON.parse(buf.toString("utf8"))
+    };
   }
   return json(404, {});
 };
@@ -143,9 +157,22 @@ const ledgerLines = () => {
   try { return fs.readFileSync(LEDGER, "utf8").split("\n").filter(Boolean).length; }
   catch { return 0; }
 };
+// The archive is stored gzipped now — the uncompressed copy was costing more
+// bandwidth per month than the plan includes (see test/backup-egress.test.js).
+// The drill deliberately reads it the way a human recovering from a real loss
+// would have to: pull the blob, decompress it, count the rows. If that stops
+// working, the backup is decorative.
 const remoteLedgerLines = () => {
-  const f = branchFiles()["backup/ledger.jsonl"];
-  return f ? f.split("\n").filter(Boolean).length : null;
+  const files = branchFiles();
+  const gzipped = files["backup/ledger.jsonl.gz"];
+  if (gzipped != null) {
+    try {
+      const buf = Buffer.isBuffer(gzipped) ? gzipped : Buffer.from(gzipped, "binary");
+      return zlib.gunzipSync(buf).toString("utf8").split("\n").filter(Boolean).length;
+    } catch { return null; }
+  }
+  const plain = files["backup/ledger.jsonl"];   // pre-compression backups
+  return plain ? plain.split("\n").filter(Boolean).length : null;
 };
 
 function seedArchive(rows = 500) {
@@ -183,12 +210,18 @@ test("a full loss of the disk is survivable", async () => {
 
   check("secret-bearing files went up encrypted, not in the clear", () => {
     const files = branchFiles();
-    assert.ok(files["backup/store.json.enc"], "store.json was not backed up at all");
-    assert.ok(!files["backup/store.json.enc"].includes("oiq_secret"),
+    // Blobs are Buffers since the archive went binary; decode for these two,
+    // which are sealed text rather than gzip. The assertions are unchanged —
+    // what is on a public branch still has to be unreadable.
+    const asText = p => files[p] == null ? null
+      : (Buffer.isBuffer(files[p]) ? files[p].toString("utf8") : String(files[p]));
+    const store = asText("backup/store.json.enc"), auth = asText("backup/auth.json.enc");
+    assert.ok(store, "store.json was not backed up at all");
+    assert.ok(!store.includes("oiq_secret"),
       "a workspace API key is sitting in plaintext on a branch of a PUBLIC repository");
-    assert.ok(!files["backup/auth.json.enc"].includes("scrypt$x"),
+    assert.ok(!auth.includes("scrypt$x"),
       "a password hash is in the clear on a public branch");
-    assert.match(files["backup/store.json.enc"], /^v1\./, "not the sealed envelope format");
+    assert.match(store, /^v1\./, "not the sealed envelope format");
   });
 
   // The disaster: the container is replaced and the disk goes with it.
