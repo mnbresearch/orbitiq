@@ -14,6 +14,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import zlib from "zlib";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -65,9 +66,50 @@ const REPO = process.env.ORBITIQ_BACKUP_REPO || "mnbresearch/orbitiq";
 const BRANCH = process.env.ORBITIQ_BACKUP_BRANCH || "data-backup";
 const API = `https://api.github.com/repos/${REPO}`;
 const MAX_LEDGER_LINES = 60000; // keep backups well under API blob limits
+const MANIFEST_PATH = "backup/manifest.json";
+
+// Git addresses a blob by the SHA-1 of "blob <bytelength>\0" + content, so
+// computing it locally tells us — before spending a single byte on the wire —
+// whether the content we are about to upload is already the content that is
+// there. Unchanged files are then referenced by that SHA in the new tree
+// instead of being uploaded again.
+function gitBlobSha(buf) {
+  return crypto.createHash("sha1")
+    .update(Buffer.concat([Buffer.from(`blob ${buf.length}\0`), buf]))
+    .digest("hex");
+}
+
+// ── Why the bulk files are gzipped ──────────────────────────
+//
+// Render's Hobby workspace includes 5 GB of bandwidth a month, and on
+// 10 September 2026 this service had spent 2.73 GB of it by the tenth day —
+// 2.71 GB of which was traffic the service itself initiated, against just
+// 17 MB served to actual visitors. Left alone it would have crossed 5 GB
+// around the 18th and taken the site down for the rest of the month.
+//
+// All of it came from this file moving the archive around uncompressed:
+//
+//   * every boot, restore() downloaded the whole 17.4 MB ledger — and a free
+//     instance that sleeps after 15 minutes boots many times a day
+//   * every backup, remoteLedgerLines() downloaded that same 17.4 MB AGAIN,
+//     purely to count its lines for the append-only guard
+//   * every backup then uploaded it base64-encoded, which is another 33% on
+//     top, whether or not a single row had changed
+//
+// JSONL of this shape compresses about 8:1, so gzip removes roughly 85% of
+// all three at once. The blob-reuse check below removes most of what is left.
+//
+// Restore stays backward compatible: it prefers the .gz and falls back to the
+// plain file, so a backup written by the previous version still restores.
+// Nothing here is evidence — the data-backup branch is force-pushed flat and
+// says so in its own README; the witness branch is the record.
+const GZIP = { level: 9 };
+const gz = text => zlib.gzipSync(Buffer.from(text, "utf8"), GZIP);
+const gunzip = buf => zlib.gunzipSync(buf).toString("utf8");
 
 const FILES = [
-  { local: path.join(DATA_DIR, "ledger.jsonl"), remote: "backup/ledger.jsonl", capLines: MAX_LEDGER_LINES },
+  { local: path.join(DATA_DIR, "ledger.jsonl"), remote: "backup/ledger.jsonl.gz",
+    legacyRemote: "backup/ledger.jsonl", gzip: true, capLines: MAX_LEDGER_LINES },
   // ── SECRET-BEARING. Encrypted before publication. ──────────
   // This branch lives in a PUBLIC repository. store.json carries workspace API
   // keys; auth.json carries scrypt password hashes, the access-request queue,
@@ -86,7 +128,10 @@ const FILES = [
   // tiny, so they go up on every backup rather than on a slower cadence.
   { local: path.join(DATA_DIR, "ledger-seals.json"), remote: "backup/ledger-seals.json" },
   { local: path.join(DATA_DIR, "ledger-anchor.json"), remote: "backup/ledger-anchor.json" },
-  { local: path.join(DATA_DIR, "elements-history.json"), remote: "backup/elements-history.json" }
+  // 3.85 MB of rebuildable element-set history — the second-largest thing here
+  // and not evidence, so it is gzipped for the same reason the ledger is.
+  { local: path.join(DATA_DIR, "elements-history.json"), remote: "backup/elements-history.json.gz",
+    legacyRemote: "backup/elements-history.json", gzip: true }
 ];
 
 let state = { enabled: !!TOKEN, restored: 0, lastBackupAt: null, lastError: null };
@@ -170,11 +215,37 @@ export async function restore() {
   if (!TOKEN) { console.log("backup: disabled (set ORBITIQ_GH_TOKEN to persist the archive)"); return state; }
   for (const f of FILES) {
     try {
-      const r = await gh(`/contents/${f.remote}?ref=${BRANCH}`, {
+      // Prefer the compressed copy; fall back to the plain one so a backup
+      // written before compression existed still restores. Without the
+      // fallback, the first boot after this change would find no ledger,
+      // start from empty, and the append-only guard would then refuse every
+      // subsequent backup — a recoverable mess, but only by hand.
+      let r = await gh(`/contents/${f.remote}?ref=${BRANCH}`, {
         headers: { Accept: "application/vnd.github.raw" }
       });
+      let usedLegacy = false;
+      if (!r.ok && f.legacyRemote) {
+        r = await gh(`/contents/${f.legacyRemote}?ref=${BRANCH}`, {
+          headers: { Accept: "application/vnd.github.raw" }
+        });
+        usedLegacy = true;
+      }
       if (!r.ok) continue;
-      let text = await r.text();
+      let text;
+      if (f.gzip && !usedLegacy) {
+        // Decompress in memory. A corrupt archive must not overwrite a good
+        // local file, so a gunzip failure skips this file rather than writing
+        // whatever partial bytes came back.
+        try { text = gunzip(Buffer.from(await r.arrayBuffer())); }
+        catch (e) {
+          console.error(`backup: ${f.remote} failed to decompress (${e.message}) — leaving local file untouched.`);
+          state.lastError = "restore: gunzip failed for " + f.remote;
+          continue;
+        }
+      } else {
+        text = await r.text();
+      }
+      if (usedLegacy) console.log(`backup: restored ${f.legacyRemote} (uncompressed legacy copy)`);
       if (f.secret) {
         if (!BACKUP_KEY) {
           console.error(`backup: cannot restore ${f.remote} — ORBITIQ_BACKUP_KEY is not set.`);
@@ -207,13 +278,41 @@ export async function restore() {
  * is none. Used for the append-only guard below.
  */
 async function remoteLedgerLines() {
+  // A tiny sidecar, read instead of the archive itself.
+  //
+  // This used to download the entire ledger — 17.4 MB — on every backup, to
+  // learn one integer. On a free instance that backs up after each sweep and
+  // again on every shutdown, that was the single most expensive thing the
+  // service did, and it bought a number the previous backup already knew.
+  //
+  // The count is written by the backup that produced the archive, so it is
+  // always in step with it. If the manifest is missing (a backup written
+  // before this existed) the guard falls back to reading the archive, which
+  // is slow but correct — and self-healing, since this run writes a manifest.
   try {
-    const r = await gh(`/contents/backup/ledger.jsonl?ref=${BRANCH}`, {
+    const r = await gh(`/contents/${MANIFEST_PATH}?ref=${BRANCH}`, {
       headers: { Accept: "application/vnd.github.raw" }
     });
-    if (!r.ok) return null;
-    return (await r.text()).split("\n").filter(Boolean).length;
-  } catch { return null; }
+    if (r.ok) {
+      const m = JSON.parse(await r.text());
+      if (Number.isInteger(m.ledgerLines)) return m.ledgerLines;
+    }
+  } catch { /* fall through to the slow path */ }
+
+  for (const remote of ["backup/ledger.jsonl.gz", "backup/ledger.jsonl"]) {
+    try {
+      const r = await gh(`/contents/${remote}?ref=${BRANCH}`, {
+        headers: { Accept: "application/vnd.github.raw" }
+      });
+      if (!r.ok) continue;
+      const text = remote.endsWith(".gz")
+        ? gunzip(Buffer.from(await r.arrayBuffer()))
+        : await r.text();
+      console.log(`backup: no manifest yet — counted ${remote} the slow way`);
+      return text.split("\n").filter(Boolean).length;
+    } catch { /* try the next candidate */ }
+  }
+  return null;
 }
 
 export async function backup() {
@@ -256,7 +355,23 @@ export async function backup() {
       console.error(state.lastError);
       return state;
     }
+    // What is already on the branch, by path -> blob sha. One small request,
+    // and it lets every unchanged file below cost nothing at all.
+    let remoteShas = {}, baseTree = null;
+    try {
+      const ref = await ghJson(`/git/ref/heads/${BRANCH}`);
+      const head = await ghJson(`/git/commits/${ref.object.sha}`);
+      baseTree = head.tree?.sha || null;
+      if (baseTree) {
+        const t = await ghJson(`/git/trees/${baseTree}?recursive=1`);
+        for (const e of t.tree || []) if (e.type === "blob") remoteShas[e.path] = e.sha;
+      }
+    } catch { /* first ever backup, or the branch is unreadable: upload everything */ }
+
     const entries = [];
+    let uploadedBytes = 0, skipped = 0;
+    let ledgerLines = null;
+
     for (const f of FILES) {
       let text;
       try { text = fs.readFileSync(f.local, "utf8"); } catch { continue; }
@@ -272,14 +387,57 @@ export async function backup() {
       if (f.capLines) {
         const lines = text.split("\n").filter(Boolean);
         if (lines.length > f.capLines) text = lines.slice(-f.capLines).join("\n") + "\n";
+        ledgerLines = text.split("\n").filter(Boolean).length;
       }
+
+      // gzip is deterministic for a given input and level, so an unchanged
+      // file compresses to identical bytes and therefore to an identical blob
+      // sha — which is what makes the reuse check below work at all.
+      const payload = f.gzip ? gz(text) : Buffer.from(text, "utf8");
+      const sha = gitBlobSha(payload);
+
+      if (remoteShas[f.remote] === sha) {
+        entries.push({ path: f.remote, mode: "100644", type: "blob", sha });
+        skipped++;
+        continue;
+      }
+
       const blob = await ghJson(`/git/blobs`, {
         method: "POST",
-        body: JSON.stringify({ content: Buffer.from(text).toString("base64"), encoding: "base64" })
+        body: JSON.stringify({ content: payload.toString("base64"), encoding: "base64" })
       });
+      uploadedBytes += Math.ceil(payload.length * 4 / 3); // base64 is what actually goes out
       entries.push({ path: f.remote, mode: "100644", type: "blob", sha: blob.sha });
     }
     if (!entries.length) return state;
+
+    // Nothing changed at all — the tree would be byte-identical to the one
+    // already on the branch, so writing a new commit for it would spend
+    // requests to say nothing. This is the common case on a shutdown that
+    // happens minutes after a wake, which is most shutdowns.
+    if (skipped === entries.length && Object.keys(remoteShas).length) {
+      state.lastBackupAt = new Date().toISOString();
+      state.lastError = null;
+      console.log(`backup: archive unchanged (${skipped} files) — nothing uploaded`);
+      return state;
+    }
+
+    // The manifest that spares the next run a multi-megabyte download.
+    if (ledgerLines !== null) {
+      const manifest = Buffer.from(JSON.stringify({
+        ledgerLines, at: new Date().toISOString(), compressed: true
+      }) + "\n", "utf8");
+      const mSha = gitBlobSha(manifest);
+      if (remoteShas[MANIFEST_PATH] !== mSha) {
+        const mb = await ghJson(`/git/blobs`, {
+          method: "POST",
+          body: JSON.stringify({ content: manifest.toString("base64"), encoding: "base64" })
+        });
+        entries.push({ path: MANIFEST_PATH, mode: "100644", type: "blob", sha: mb.sha });
+      } else {
+        entries.push({ path: MANIFEST_PATH, mode: "100644", type: "blob", sha: mSha });
+      }
+    }
 
     // ── Never publish a tree that drops what is already there ──
     //
@@ -293,12 +451,21 @@ export async function backup() {
     // Starting from the current tree means a missing local file leaves the
     // remote copy alone, which is the only safe direction for a backup to
     // fail in.
-    let baseTree = null;
-    try {
-      const ref = await ghJson(`/git/ref/heads/${BRANCH}`);
-      const head = await ghJson(`/git/commits/${ref.object.sha}`);
-      baseTree = head.tree?.sha || null;
-    } catch { /* first ever backup: there is nothing to preserve */ }
+    // (baseTree was read at the top of this function, together with the blob
+    // shas used to skip unchanged uploads — one round trip serving both.)
+    //
+    // Because base_tree preserves everything already on the branch, the old
+    // uncompressed copies would otherwise sit there forever beside their .gz
+    // replacements: two ledgers, one stale, and a reader with no way to tell
+    // which is current. Drop them once — and only once — their compressed
+    // replacement is actually in this tree.
+    for (const f of FILES) {
+      if (!f.legacyRemote) continue;
+      if (!remoteShas[f.legacyRemote]) continue;
+      if (!entries.some(e => e.path === f.remote)) continue;
+      entries.push({ path: f.legacyRemote, mode: "100644", type: "blob", sha: null });
+      console.log(`backup: removing superseded ${f.legacyRemote}`);
+    }
 
     const tree = await ghJson(`/git/trees`, {
       method: "POST",
@@ -316,7 +483,8 @@ export async function backup() {
     });
     state.lastBackupAt = new Date().toISOString();
     state.lastError = null;
-    console.log(`backup: archive persisted (${entries.length} files) → ${REPO}@${BRANCH}`);
+    console.log(`backup: archive persisted (${entries.length} files, ${skipped} unchanged, `
+      + `${(uploadedBytes / 1048576).toFixed(2)} MB uploaded) → ${REPO}@${BRANCH}`);
   } catch (e) {
     state.lastError = "backup: " + e.message;
     console.error(state.lastError);
