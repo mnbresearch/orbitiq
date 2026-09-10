@@ -152,6 +152,64 @@ jobs:
             echo "nothing to record"; exit 0; }
           git push origin witness
 
+      # ── Liveness alarm ─────────────────────────────────────
+      #
+      # The keep-alive used to be the only thing that failed loudly when the
+      # service could not be reached. It no longer runs on a schedule, and
+      # deleting an alarm without replacing it is how an outage becomes a
+      # week-long outage nobody noticed.
+      #
+      # The observation above deliberately does NOT fail on a single miss: the
+      # instance is expected to sleep, and an alarm that fires on ordinary
+      # sleeping gets muted, which is worse than no alarm at all. So the alarm
+      # reads the log this workflow has already written and asks a different
+      # question — not "is it awake" but "has it failed to wake, repeatedly".
+      #
+      # A sleeping instance still answers when something knocks; it just takes
+      # ~50 s, and the 90 s curl timeout above allows for that. So consecutive
+      # unreachable observations do not mean "asleep". They mean the knocking
+      # stopped working.
+      - name: Alarm only on a sustained failure to wake
+        if: always()
+        env:
+          THRESHOLD: "4"   # 4 consecutive hourly misses ≈ 4 h unreachable
+        run: |
+          git clone --branch witness --single-branch --depth 50 \
+            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" wlog 2>/dev/null || {
+              echo "::notice::no witness log yet — nothing to judge"; exit 0; }
+
+          python3 - <<'EOF'
+          import json, os, sys
+          try:
+              lines = [l for l in open("wlog/witness/log.jsonl") if l.strip()]
+          except FileNotFoundError:
+              print("::notice::witness log not present yet"); sys.exit(0)
+
+          n = int(os.environ["THRESHOLD"])
+          recent = []
+          for l in lines[-n:]:
+              try: recent.append(json.loads(l))
+              except json.JSONDecodeError: pass
+
+          if len(recent) < n:
+              print(f"::notice::only {len(recent)} observations so far, need {n} to judge")
+              sys.exit(0)
+
+          bad = [r for r in recent if str(r.get("http")) != "200"]
+          if len(bad) == n:
+              print(f"::error::the public endpoint has been unreachable for the last {n} "
+                    f"hourly observations. A sleeping instance still answers a knock in "
+                    f"~50 s, so this is not sleep — the service is failing to wake. "
+                    f"Codes seen: {[r.get('http') for r in recent]}. "
+                    f"Check the Render dashboard for a failed deploy, a crash loop, or a "
+                    f"suspended free instance (the 750 h monthly quota is shared by every "
+                    f"free service in the workspace).")
+              sys.exit(1)
+
+          print(f"last {n} observations: {[r.get('http') for r in recent]} — "
+                f"{len(bad)} miss(es), not a sustained outage")
+          EOF
+
       - name: Summary
         if: always()
         run: |

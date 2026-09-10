@@ -1,185 +1,112 @@
 # ============================================================
-# OrbitIQ keep-alive.
+# OrbitIQ warm-up — MANUAL ONLY. This no longer runs on a schedule.
 #
-# Render free web services spin down after 15 minutes without a request and
-# take ~50 s to wake, so the first visitor after a quiet spell waits nearly a
-# minute. This pings the service so it stays warm during the hours people
-# actually visit.
+# ── Why the schedule was removed ─────────────────────────────
+# This used to ping hourly from 03:00-19:59 UTC to keep the free Render
+# instance from spinning down, and it reported a tidy projection every run:
 #
-# ── Why each run pings in a loop instead of once ─────────────
-# The obvious design — cron every 10 minutes, one ping per run — does not
-# work, and the failure is silent. GitHub's scheduled workflows are best
-# effort: the docs say a run "may be delayed during periods of high loads",
-# and in practice ticks are dropped wholesale. Measured gaps between
-# consecutive runs of the previous "*/10" version of this file:
+#     17 h/day x 30 days = 510 h of the 750 h monthly quota
 #
-#     25, 55, 41, 24, 49, 37 minutes
+# That projection was fiction, and the run log proves it. The cron asks for
+# 17 runs a day. GitHub delivered four:
 #
-# Every one of those exceeds the 15-minute spin-down. The workflow was green
-# on every run and the service was asleep for most of the window, because a
-# green run only proves the ping happened, not that it happened in time.
+#     8 Sep   07:55, 12:44, 17:09, 20:55
+#     9 Sep   07:59, 12:49, 17:04, 19:42
+#    10 Sep   07:58   (checked at 09:59 — the service was asleep)
 #
-# So the cron cadence is treated as a hint, not a guarantee. Each run keeps
-# pinging on its own five-minute clock for up to an hour, which covers the
-# gap even when the next tick is dropped entirely. The five-minute interval
-# leaves three chances to land inside any 15-minute spin-down window.
+# Each run covers 55 minutes, so the actual warm coverage was under four hours
+# a day, arriving at unpredictable times, with three- and four-hour holes in
+# the middle of the window the workflow claimed to cover. Every run was green.
 #
-# ── The budget, which is the other half of the point ─────────
-# Render grants 750 free instance hours per WORKSPACE per calendar month.
-# Spun-down time costs nothing; running time is what counts. Exceed 750 and
-# every free service in the workspace is SUSPENDED until the month rolls over.
+# This is the same failure the old "*/10" version had, one level up: that
+# version lost individual ticks and was fixed with an in-run loop, but the loop
+# only spans an hour and GitHub is dropping whole blocks of hours. A green run
+# still only proves the ping happened, not that it happened in time.
 #
-# That makes round-the-clock pinging a trap:
+# ── Why it was not simply repaired ───────────────────────────
+# Because keeping it working was the expensive option, not the cheap one.
+# Delivering the intended 17 h/day would have spent ~510 h of the 750 h quota
+# to hold an instance warm for visitors who mostly were not there — and the
+# quota is shared by every free service in the workspace, so spending it here
+# is spending it everywhere.
 #
-#     24 h x 31 days = 744 h        99.2% of the quota, 6 h of margin
+# The actual problem was never "the instance sleeps". It was "a sleeping
+# instance makes the reader wait ~50 s for HTML that has not changed since the
+# last deploy". That is a caching problem, and it is now fixed as one: the
+# marketing pages ship with `stale-while-revalidate`, so a cache can serve the
+# page instantly and let the instance wake on its own time. See the cache
+# header block in server.js.
 #
-# Six hours is nothing. A couple of redeploys (which briefly run the old and
-# new instance together), one manual restart, or adding any second free
-# service to the workspace and the quota is gone — mid-month, without warning,
-# taking the site down until the 1st.
+# Sleeping is now the intended state. It costs nothing and the site stays fast.
 #
-# So this deliberately does NOT run 24/7. It keeps the service warm across a
-# daily window and lets it sleep the rest of the time:
+# ── What this is still good for ──────────────────────────────
+# Warming the instance deliberately: before a demo, a call, or sending the link
+# to someone who will click it once and judge the product on that click. Run it
+# from the Actions tab and give it a minute.
 #
-#     17 h x 31 days = 527 h        70% of the quota, 223 h of margin
-#
-# The window below is 03:00-19:59 UTC, which is 08:30-01:29 IST — morning
-# through late evening in India, and it also covers European daytime and the
-# US morning. Outside it the service sleeps; a visitor arriving then simply
-# waits the ~50 s wake-up, exactly as today.
-#
-# Note that the loop makes the 527 h estimate accurate rather than optimistic.
-# Under the old one-ping-per-run version actual usage was well BELOW 527 h,
-# but only because the service kept falling asleep — the bug and the underrun
-# were the same thing. Widening the window is therefore not free: re-read the
-# arithmetic in the "Report the budget" step, which recomputes it every run.
-#
-# Cost on GitHub's side: nothing. This repository is public, and public repos
-# get unlimited Actions minutes on standard runners — the 2,000-minute monthly
-# quota applies only to private repositories, so this cannot eat into what
-# other (private) projects depend on.
+# Liveness alerting moved to witness.yml, which already probes the public
+# endpoint hourly and can tell a sleeping instance from a broken one.
 # ============================================================
-name: Keep-alive
+name: Warm-up (manual)
 
 on:
-  schedule:
-    # Hourly. The loop below covers the whole hour, so a tighter cron would
-    # only queue runs that immediately cancel each other (see concurrency).
-    # Requesting less also makes it likelier GitHub actually honours the tick.
-    - cron: "5 3-19 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "How long to keep it warm (minutes, max 55)"
+        required: false
+        default: "10"
 
-# If a run is somehow still going when the next fires, the newcomer wins and
-# takes over the pinging. A cancelled keep-alive run is expected and harmless,
-# not a failure to investigate.
 concurrency:
-  group: orbitiq-keepalive
+  group: orbitiq-warmup
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  ping:
+  warm:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 60
     steps:
-      - name: Keep the service warm for the hour
+      - name: Warm the instance
         env:
           URL: https://orbit.mnbresearch.com/api/health
           WARM_URL: https://orbit.mnbresearch.com/api/status
-          INTERVAL_SEC: "300"   # 5 min: three shots inside any 15-min spin-down
-          DURATION_SEC: "3300"  # 55 min, so the next hourly tick takes over
+          MINUTES: ${{ inputs.minutes }}
         run: |
-          # /api/health is deliberate: it is the cheapest endpoint on the
-          # service. It does no screening, touches no catalogue, and allocates
-          # nothing — so keeping the instance warm costs the instance nothing.
+          mins=${MINUTES:-10}
+          case "$mins" in ''|*[!0-9]*) mins=10 ;; esac
+          [ "$mins" -gt 55 ] && mins=55
+          deadline=$(( $(date +%s) + mins * 60 ))
+          echo "warming for $mins minute(s)"
+
           ping_once () {
-            # Truncate first, or a later failure prints the body of an earlier
-            # success and makes an outage look like a malformed response.
             : > /tmp/body
             code=$(curl -s -o /tmp/body -w "%{http_code}" --max-time 90 \
-                     -A "OrbitIQ-keepalive/2 (github.com/${{ github.repository }})" \
-                     "$URL") || code="000"
+                     -A "OrbitIQ-warmup/3 (github.com/${{ github.repository }})" "$URL") || code="000"
             echo "$(date -u +%H:%M:%S) -> HTTP $code"
             [ "$code" = "200" ]
           }
 
-          # Keeping the process alive is not the same as keeping it useful.
-          # /api/health answers in ~300 ms even on a box that has just booted,
-          # because it touches nothing; /api/status on a cold instance took
-          # 34.6 s while it built the 16,513-object catalogue. Without this the
-          # keep-alive would hold a warm process in front of a cold cache and
-          # the first real visitor would still wait. One request per run is
-          # enough — once built, the catalogue is served from memory and
-          # refreshed in the background.
-          warm_catalogue () {
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
-                     -A "OrbitIQ-keepalive/2 (github.com/${{ github.repository }})" \
-                     "$WARM_URL") || code="000"
-            echo "$(date -u +%H:%M:%S) -> catalogue warm-up HTTP $code"
-          }
-
-          deadline=$(( $(date +%s) + DURATION_SEC ))
-          attempts=0; ok=0; warmed=0
-
+          ok=0; attempts=0; warmed=0
           while :; do
             attempts=$(( attempts + 1 ))
-            # A cold instance takes ~50 s to wake and the first request pays
-            # for it, so one immediate retry before counting a miss.
+            # A cold instance takes ~50 s to wake and the first request pays for
+            # it, so one retry before counting a miss.
             if ping_once || { sleep 20; ping_once; }; then
               ok=$(( ok + 1 ))
-              if [ "$warmed" = "0" ]; then warm_catalogue; warmed=1; fi
-            else
-              echo "::warning::ping $attempts did not return 200"
-              head -c 200 /tmp/body || true
+              # /api/health answers without touching the catalogue. Warming the
+              # process is not the same as warming the data it serves, so pull
+              # /api/status once to build the catalogue too.
+              if [ "$warmed" = "0" ]; then
+                curl -s -o /dev/null -w "catalogue warm-up HTTP %{http_code}\n" --max-time 120 "$WARM_URL" || true
+                warmed=1
+              fi
             fi
             [ "$(date +%s)" -lt "$deadline" ] || break
-            sleep "$INTERVAL_SEC"
+            sleep 300
           done
 
           echo "kept warm with $ok/$attempts successful pings"
-          echo "KEEPALIVE_OK=$ok"            >> "$GITHUB_ENV"
-          echo "KEEPALIVE_ATTEMPTS=$attempts" >> "$GITHUB_ENV"
-
-          # Only shout if the service was down for the whole hour. Individual
-          # misses during a Render incident are noise; a total miss is not.
-          if [ "$ok" = "0" ]; then
-            echo "::error::service never returned 200 in $attempts attempts over the hour"
-            exit 1
-          fi
-
-      - name: Report the budget
-        if: always()
-        run: |
-          python3 - <<'EOF'
-          import calendar, datetime, os
-          # Recomputed every run so the numbers in the header can never drift
-          # away from the schedule that is actually configured above.
-          START_H, END_H = 3, 19          # inclusive cron hour range
-          QUOTA = 750                     # Render free instance-hours / workspace / month
-
-          hours_per_day = END_H - START_H + 1
-          now = datetime.datetime.now(datetime.timezone.utc)
-          days = calendar.monthrange(now.year, now.month)[1]
-          projected = hours_per_day * days
-          pct = projected / QUOTA * 100
-
-          ok = os.environ.get("KEEPALIVE_OK", "?")
-          attempts = os.environ.get("KEEPALIVE_ATTEMPTS", "?")
-
-          print(f"pings this run  : {ok}/{attempts} returned 200")
-          print(f"window          : {START_H:02d}:00-{END_H:02d}:59 UTC ({hours_per_day} h/day)")
-          print(f"days this month : {days}")
-          print(f"projected usage : {projected} h of {QUOTA} h  ({pct:.0f}%)")
-          print(f"margin          : {QUOTA - projected} h")
-
-          if projected > QUOTA * 0.85:
-              print("::warning::projected usage is above 85% of the free quota. "
-                    "Redeploys and organic traffic add hours on top of this. "
-                    "Narrow the cron hour range in this workflow.")
-          if projected >= QUOTA:
-              print("::error::this schedule alone would exhaust the free quota and "
-                    "suspend the service before month end.")
-              raise SystemExit(1)
-          EOF
+          [ "$ok" -gt 0 ] || { echo "::error::service never returned 200"; exit 1; }
