@@ -65,7 +65,14 @@ const TOKEN = process.env.ORBITIQ_GH_TOKEN || null;
 const REPO = process.env.ORBITIQ_BACKUP_REPO || "mnbresearch/orbitiq";
 const BRANCH = process.env.ORBITIQ_BACKUP_BRANCH || "data-backup";
 const API = `https://api.github.com/repos/${REPO}`;
-const MAX_LEDGER_LINES = 60000; // keep backups well under API blob limits
+// Cap on rows published to the backup. Overridable only so the truncation
+// path can be exercised in tests without generating 60,000 rows — it has a
+// hard floor, because a mistyped value here would silently amputate the
+// archive, and the archive is the product.
+const MAX_LEDGER_LINES = (() => {
+  const raw = Number(process.env.ORBITIQ_MAX_LEDGER_LINES);
+  return Number.isFinite(raw) && raw >= 1000 ? Math.floor(raw) : 60000;
+})();
 const MANIFEST_PATH = "backup/manifest.json";
 
 // Git addresses a blob by the SHA-1 of "blob <bytelength>\0" + content, so
@@ -107,9 +114,78 @@ const GZIP = { level: 9 };
 const gz = text => zlib.gzipSync(Buffer.from(text, "utf8"), GZIP);
 const gunzip = buf => zlib.gunzipSync(buf).toString("utf8");
 
+// ── The ledger goes up in shards, not as one file ──────────
+//
+// Compressing the archive cut each backup from 21.3 MB to 4.3 MB, which was
+// enough to stop the immediate breach. But the cost still scaled with the
+// size of the WHOLE archive, and the archive only ever grows: appending one
+// row re-uploaded every row that came before it. O(n) per append, about
+// twelve times a day. Measured against the real growth rate — 126 KB/day
+// compressed — that is 1.6 GB of backup traffic in September, 3.4 GB in
+// October and 5.2 GB in November, past the 5 GB allowance with nothing
+// having gone wrong. A fix that merely postpones the same breach by six
+// weeks is not a fix.
+//
+// So the ledger is split on `seq` into fixed ranges. Once a range is full
+// its shard never changes again, so it compresses to identical bytes,
+// hashes to the same blob sha, and is skipped by the reuse check below —
+// permanently. Only the newest shard moves. Cost is O(1) per append and
+// stays flat however large the archive grows.
+//
+// Sharding on `seq` rather than on position in the file is the load-bearing
+// choice. The cap below drops the OLDEST rows once the ledger passes
+// MAX_LEDGER_LINES; with position-based boundaries every surviving row would
+// land in a different shard on every append after that, rewriting the entire
+// archive each time and turning the cure into the disease.
+const SHARD_LINES = 5000;
+const SHARD_DIR = "backup/ledger/";
+const SHARD_RE = /^backup\/ledger\/(pre|\d{5})\.jsonl\.gz$/;
+const LEGACY_LEDGER = ["backup/ledger.jsonl.gz", "backup/ledger.jsonl"];
+
+/**
+ * Split ledger text into { remotePath -> text }, in file order.
+ *
+ * Returns null if the rows are not in non-decreasing shard order, in which
+ * case the caller writes the single unsharded archive instead. Reassembling
+ * shards in the wrong order would silently break the hash chain the whole
+ * product rests on, so this refuses to shard at all rather than shard rows
+ * it cannot confidently place.
+ *
+ * The oldest rows predate `seq` entirely (3,314 of them, reported by verify()
+ * as unchained). They sit at the head and collect into one sealed "pre"
+ * shard that never changes again.
+ */
+function shardLedger(text) {
+  const lines = text.split("\n").filter(Boolean);
+  if (!lines.length) return null;
+  const runs = [];
+  let lastRank = -Infinity;
+  for (const line of lines) {
+    let rank = -1;                        // -1 = unsequenced legacy row
+    try {
+      const o = JSON.parse(line);
+      if (Number.isInteger(o.seq)) rank = Math.floor(o.seq / SHARD_LINES);
+    } catch { /* unparseable: treat as legacy; the order check still applies */ }
+    if (rank < lastRank) return null;     // out of order — refuse to shard
+    if (!runs.length || rank !== lastRank) runs.push({ rank, lines: [] });
+    runs[runs.length - 1].lines.push(line);
+    lastRank = rank;
+  }
+  const out = new Map();
+  for (const r of runs) {
+    const name = r.rank < 0 ? "pre" : String(r.rank).padStart(5, "0");
+    out.set(`${SHARD_DIR}${name}.jsonl.gz`, r.lines.join("\n") + "\n");
+  }
+  return out;
+}
+
+/** Shard paths in reassembly order: the unsequenced head first, then by range. */
+const shardOrder = paths => [...paths].sort((a, b) => {
+  const k = p => p.includes("/pre.") ? -1 : parseInt(p.match(/(\d{5})\.jsonl\.gz$/)[1], 10);
+  return k(a) - k(b);
+});
+
 const FILES = [
-  { local: path.join(DATA_DIR, "ledger.jsonl"), remote: "backup/ledger.jsonl.gz",
-    legacyRemote: "backup/ledger.jsonl", gzip: true, capLines: MAX_LEDGER_LINES },
   // ── SECRET-BEARING. Encrypted before publication. ──────────
   // This branch lives in a PUBLIC repository. store.json carries workspace API
   // keys; auth.json carries scrypt password hashes, the access-request queue,
@@ -226,8 +302,92 @@ async function ensureBranch() {
 }
 
 // ---------- restore (called once at boot, before the stores load) ----------
+/**
+ * Reassemble the ledger from its shards, falling back to the single-file
+ * archives an earlier version wrote.
+ *
+ * Refuses to write a partial ledger. A shard that 404s would otherwise
+ * produce an archive with a hole punched in it, which is strictly worse than
+ * having no archive at all: the hash chain breaks, verify() reports the
+ * record as damaged, and the append-only guard cannot save it because a
+ * ledger missing rows from the MIDDLE is not shorter than the remote one.
+ * The gap would then be published over the good copy as if it were fine.
+ */
+async function restoreLedger() {
+  const local = path.join(DATA_DIR, "ledger.jsonl");
+  let manifest = null;
+  try {
+    const r = await gh(`/contents/${MANIFEST_PATH}?ref=${BRANCH}`, {
+      headers: { Accept: "application/vnd.github.raw" }
+    });
+    if (r.ok) manifest = JSON.parse(await r.text());
+  } catch { /* no manifest: fall through to the legacy layout */ }
+
+  const paths = Array.isArray(manifest?.shards) ? shardOrder(manifest.shards) : [];
+  if (paths.length) {
+    const parts = [];
+    for (const p of paths) {
+      try {
+        const r = await gh(`/contents/${p}?ref=${BRANCH}`, {
+          headers: { Accept: "application/vnd.github.raw" }
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        parts.push(gunzip(Buffer.from(await r.arrayBuffer())));
+      } catch (e) {
+        console.error(`backup: ledger shard ${p} could not be read (${e.message}). Refusing to `
+          + `assemble a partial ledger — the local copy is left untouched and the shards on `
+          + `the branch will not be overwritten.`);
+        state.lastError = "restore: unreadable ledger shard " + p;
+        for (const q of paths) state.unreadable.add(q);
+        return false;
+      }
+    }
+    const text = parts.join("");
+    const lines = text.split("\n").filter(Boolean).length;
+    // The manifest is written by the backup that produced these shards, so a
+    // mismatch means the set is not the set that was published — a shard
+    // dropped, or a stale manifest read against newer shards. Either way the
+    // reassembled file is not the archive, so it does not get written.
+    if (Number.isInteger(manifest.ledgerLines) && lines !== manifest.ledgerLines) {
+      console.error(`backup: reassembled ledger has ${lines} rows but the manifest published `
+        + `${manifest.ledgerLines}. The shard set is incomplete — refusing to write it.`);
+      state.lastError = `restore: shard set incomplete (${lines}/${manifest.ledgerLines})`;
+      for (const q of paths) state.unreadable.add(q);
+      return false;
+    }
+    fs.mkdirSync(path.dirname(local), { recursive: true });
+    fs.writeFileSync(local, text);
+    state.restored++;
+    console.log(`backup: restored ledger from ${paths.length} shards (${lines} rows)`);
+    return true;
+  }
+
+  // No shards on the branch: a backup written before this layout existed.
+  // Without this path the first boot after the change finds no ledger, starts
+  // empty, and the append-only guard then refuses every later backup.
+  for (const remote of LEGACY_LEDGER) {
+    try {
+      const r = await gh(`/contents/${remote}?ref=${BRANCH}`, {
+        headers: { Accept: "application/vnd.github.raw" }
+      });
+      if (!r.ok) continue;
+      const text = remote.endsWith(".gz")
+        ? gunzip(Buffer.from(await r.arrayBuffer()))
+        : await r.text();
+      if (!text || text.length <= 2) continue;
+      fs.mkdirSync(path.dirname(local), { recursive: true });
+      fs.writeFileSync(local, text);
+      state.restored++;
+      console.log(`backup: restored ledger from ${remote} (pre-shard layout)`);
+      return true;
+    } catch { /* try the next candidate */ }
+  }
+  return false;
+}
+
 export async function restore() {
   if (!TOKEN) { console.log("backup: disabled (set ORBITIQ_GH_TOKEN to persist the archive)"); return state; }
+  await restoreLedger();
   for (const f of FILES) {
     try {
       // Prefer the compressed copy; fall back to the plain one so a backup
@@ -304,7 +464,7 @@ export async function restore() {
       }
     } catch (e) { state.lastError = "restore: " + e.message; }
   }
-  console.log(`backup: restored ${state.restored}/${FILES.length} archive files from ${REPO}@${BRANCH}`);
+  console.log(`backup: restored ${state.restored}/${FILES.length + 1} archive files from ${REPO}@${BRANCH}`);
   return state;
 }
 
@@ -406,7 +566,7 @@ export async function backup() {
 
     const entries = [];
     let uploadedBytes = 0, skipped = 0;
-    let ledgerLines = null;
+    let ledgerLines = null, shardPaths = null;
 
     for (const f of FILES) {
       // Restore could not read this one. Whatever is on the branch is the only
@@ -432,12 +592,6 @@ export async function backup() {
         }
         text = seal(text);
       }
-      if (f.capLines) {
-        const lines = text.split("\n").filter(Boolean);
-        if (lines.length > f.capLines) text = lines.slice(-f.capLines).join("\n") + "\n";
-        ledgerLines = text.split("\n").filter(Boolean).length;
-      }
-
       // gzip is deterministic for a given input and level, so an unchanged
       // file compresses to identical bytes and therefore to an identical blob
       // sha — which is what makes the reuse check below work at all.
@@ -457,6 +611,85 @@ export async function backup() {
       uploadedBytes += Math.ceil(payload.length * 4 / 3); // base64 is what actually goes out
       entries.push({ path: f.remote, mode: "100644", type: "blob", sha: blob.sha });
     }
+    // ── the ledger, written as shards ──────────────────────
+    // Sealed shards hash to bytes already on the branch and cost nothing;
+    // in the steady state only the newest shard is actually uploaded.
+    let ledgerText = null;
+    try { ledgerText = fs.readFileSync(path.join(DATA_DIR, "ledger.jsonl"), "utf8"); }
+    catch { /* nothing local: leave whatever is on the branch alone */ }
+
+    if (ledgerText !== null) {
+      const all = ledgerText.split("\n").filter(Boolean);
+      const kept = all.length > MAX_LEDGER_LINES ? all.slice(-MAX_LEDGER_LINES) : all;
+      const text = kept.join("\n") + "\n";
+      ledgerLines = kept.length;
+      const shards = shardLedger(text);
+
+      if (shards) {
+        shardPaths = [...shards.keys()];
+        for (const [p, body] of shards) {
+          if (state.unreadable.has(p)) {
+            if (remoteShas[p]) {
+              entries.push({ path: p, mode: "100644", type: "blob", sha: remoteShas[p] });
+              skipped++;
+              console.warn(`backup: preserving ${p} unchanged — this instance could not read it`);
+            }
+            continue;
+          }
+          const payload = gz(body);
+          const sha = gitBlobSha(payload);
+          if (remoteShas[p] === sha) {
+            entries.push({ path: p, mode: "100644", type: "blob", sha });
+            skipped++;
+            continue;
+          }
+          const blob = await ghJson(`/git/blobs`, {
+            method: "POST",
+            body: JSON.stringify({ content: payload.toString("base64"), encoding: "base64" })
+          });
+          uploadedBytes += Math.ceil(payload.length * 4 / 3);
+          entries.push({ path: p, mode: "100644", type: "blob", sha: blob.sha });
+        }
+        // Shards the cap has emptied must be dropped, not merely left behind.
+        // base_tree preserves anything not mentioned, so an orphaned shard
+        // would sit on the branch forever and a later restore would splice
+        // rows the cap deliberately discarded back into the middle of the
+        // archive — silent corruption that looks like a successful restore.
+        for (const p of Object.keys(remoteShas)) {
+          if (SHARD_RE.test(p) && !shards.has(p)) {
+            entries.push({ path: p, mode: "100644", type: "blob", sha: null });
+            console.log(`backup: removing emptied ledger shard ${p}`);
+          }
+        }
+        // Same reasoning for the single-file archives this layout replaces:
+        // drop them only once their shards are actually in this tree.
+        for (const p of LEGACY_LEDGER) {
+          if (!remoteShas[p]) continue;
+          entries.push({ path: p, mode: "100644", type: "blob", sha: null });
+          console.log(`backup: removing superseded ${p}`);
+        }
+      } else {
+        // Rows are not in non-decreasing seq order, so they cannot be placed
+        // into shards without risking a reordered archive. Fall back to the
+        // single file: more expensive, but correct, and it says so out loud.
+        console.warn("backup: ledger rows are not in seq order — writing the unsharded archive");
+        const payload = gz(text);
+        const sha = gitBlobSha(payload);
+        const legacyPath = LEGACY_LEDGER[0];
+        if (remoteShas[legacyPath] === sha) {
+          entries.push({ path: legacyPath, mode: "100644", type: "blob", sha });
+          skipped++;
+        } else {
+          const blob = await ghJson(`/git/blobs`, {
+            method: "POST",
+            body: JSON.stringify({ content: payload.toString("base64"), encoding: "base64" })
+          });
+          uploadedBytes += Math.ceil(payload.length * 4 / 3);
+          entries.push({ path: legacyPath, mode: "100644", type: "blob", sha: blob.sha });
+        }
+      }
+    }
+
     if (!entries.length) return state;
 
     // Nothing changed at all — the tree would be byte-identical to the one
@@ -473,7 +706,8 @@ export async function backup() {
     // The manifest that spares the next run a multi-megabyte download.
     if (ledgerLines !== null) {
       const manifest = Buffer.from(JSON.stringify({
-        ledgerLines, at: new Date().toISOString(), compressed: true
+        ledgerLines, at: new Date().toISOString(), compressed: true,
+        ...(shardPaths ? { shards: shardPaths } : {})
       }) + "\n", "utf8");
       const mSha = gitBlobSha(manifest);
       if (remoteShas[MANIFEST_PATH] !== mSha) {
