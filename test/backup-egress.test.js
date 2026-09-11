@@ -64,6 +64,7 @@ function makeGitHub() {
     const e = (trees.get(gh.branchTree) || []).find(x => x.path === p);
     return e ? blobs.get(e.sha) : null;
   };
+  gh.paths = () => (trees.get(gh.branchTree) || []).map(e => e.path);
 
   gh.fetch = async (url, opts = {}) => {
     const u = String(url);
@@ -127,6 +128,20 @@ gh = makeGitHub().seed({});                       // empty branch at import time
 globalThis.fetch = (...a) => gh.fetch(...a);
 const backup = await import("../src/backup.js");
 
+// The ledger is published as seq-range shards. Reassemble it the way restore
+// does — in order — so these assertions describe the archive a recovery would
+// actually get back, not one convenient blob.
+const SHARD_RE = /^backup\/ledger\/(pre|\d{5})\.jsonl\.gz$/;
+const remoteLedger = () => {
+  const shards = gh.paths().filter(p => SHARD_RE.test(p)).sort((a, b) => {
+    const k = p => p.includes("/pre.") ? -1 : parseInt(p.match(/(\d{5})\.jsonl\.gz$/)[1], 10);
+    return k(a) - k(b);
+  });
+  if (shards.length) return shards.map(p => zlib.gunzipSync(gh.fileAt(p)).toString("utf8")).join("");
+  const single = gh.fileAt("backup/ledger.jsonl.gz");
+  return single ? zlib.gunzipSync(single).toString("utf8") : null;
+};
+
 let passed = 0, failed = 0;
 const check = async (name, fn) => {
   try { await fn(); passed++; console.log(`#   ok    ${name}`); }
@@ -140,10 +155,10 @@ test("the archive moves compressed, and only when it changed", async () => {
   await check("the first backup uploads a COMPRESSED ledger", async () => {
     gh.uploadedBytes = 0; gh.blobPosts = 0;
     await backup.backup();
-    const stored = gh.fileAt("backup/ledger.jsonl.gz");
+    const stored = remoteLedger();
     assert.ok(stored, "no compressed ledger was written");
-    assert.equal(zlib.gunzipSync(stored).toString("utf8"), ledgerText,
-      "the compressed archive does not round-trip to the original — this is the product");
+    assert.equal(stored, ledgerText,
+      "the sharded archive does not round-trip to the original — this is the product");
 
     const plainBase64 = Math.ceil(Buffer.byteLength(ledgerText) * 4 / 3);
     assert.ok(gh.uploadedBytes < plainBase64 * 0.25,
@@ -165,26 +180,53 @@ test("the archive moves compressed, and only when it changed", async () => {
   await check("appending a row DOES upload again", async () => {
     // The mirror image: a cap that skipped real changes would silently stop
     // backing the archive up, which is worse than the bandwidth it saves.
-    fs.appendFileSync(path.join(tmp, "ledger.jsonl"),
-      JSON.stringify({ seq: LEDGER_ROWS + 1, prev: "a".repeat(32), h: "c".repeat(32), type: "risk" }) + "\n");
+    const appended = JSON.stringify({ seq: LEDGER_ROWS + 1, prev: "a".repeat(32), h: "c".repeat(32), type: "risk" }) + "\n";
+    fs.appendFileSync(path.join(tmp, "ledger.jsonl"), appended);
     gh.uploadedBytes = 0; gh.blobPosts = 0;
     await backup.backup();
     assert.ok(gh.blobPosts > 0, "a real change was skipped — the archive would stop being backed up");
-    const stored = zlib.gunzipSync(gh.fileAt("backup/ledger.jsonl.gz")).toString("utf8");
+    const stored = remoteLedger();
     assert.equal(stored.split("\n").filter(Boolean).length, LEDGER_ROWS + 1);
+    assert.equal(stored, ledgerText + appended,
+      "appending a row did not round-trip — shards reassembled wrong or out of order");
+
+    // ── the property the whole shard layout exists for ──
+    // One appended row must cost one shard, not the archive. Without this the
+    // upload stays O(n): correct, fully tested, and still growing past the
+    // bandwidth allowance every month as the ledger gets longer.
+    const wholeArchive = Math.ceil(zlib.gzipSync(Buffer.from(stored, "utf8"), { level: 9 }).length * 4 / 3);
+    assert.ok(gh.uploadedBytes < wholeArchive * 0.35,
+      `appending one row uploaded ${gh.uploadedBytes} B, which is not meaningfully less than `
+      + `the ${wholeArchive} B a full-archive push costs — the cost is still O(n) per append`);
+    assert.ok(gh.blobPosts <= 2,
+      `expected at most the active shard (+manifest) to be written, got ${gh.blobPosts} blob posts`);
+    console.log(`#         one appended row cost ${gh.uploadedBytes} B vs ${wholeArchive} B `
+      + `for the whole archive (${(gh.uploadedBytes / wholeArchive * 100).toFixed(1)}%)`);
   });
 
   await check("counting the remote ledger costs a manifest, not a download", async () => {
     // remoteLedgerLines() used to pull the whole archive to learn one integer.
     const manifest = gh.fileAt("backup/manifest.json");
     assert.ok(manifest, "no manifest was written");
-    assert.equal(JSON.parse(manifest.toString()).ledgerLines, LEDGER_ROWS + 1);
-    assert.ok(manifest.length < 200, "the manifest should be tiny, got " + manifest.length + " bytes");
+    const m = JSON.parse(manifest.toString());
+    assert.equal(m.ledgerLines, LEDGER_ROWS + 1);
+    // The manifest also names the shard set, because restore must know which
+    // files make up the archive before it can refuse an incomplete one.
+    assert.ok(Array.isArray(m.shards) && m.shards.length,
+      "the manifest does not list its shards — restore would have nothing to reassemble");
+    assert.equal(m.shards.length, new Set(m.shards).size, "the shard list repeats a path");
+    // Still a sidecar rather than a download: the list is bounded by
+    // MAX_LEDGER_LINES / SHARD_LINES entries, so it cannot grow without limit.
+    assert.ok(manifest.length < 1024,
+      `the manifest should stay tiny next to the archive, got ${manifest.length} bytes`);
   });
 
   await check("the superseded uncompressed copy is removed, not left to rot", async () => {
     assert.equal(gh.fileAt("backup/ledger.jsonl"), null,
-      "the old plain ledger is still on the branch beside its .gz replacement");
+      "the old plain ledger is still on the branch beside its replacement");
+    assert.equal(gh.fileAt("backup/ledger.jsonl.gz"), null,
+      "the single-file .gz archive is still on the branch beside its shards — two ledgers, "
+      + "one stale, and a reader with no way to tell which is current");
   });
 
   await check("restore brings the archive back byte-for-byte", async () => {

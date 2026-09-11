@@ -162,17 +162,31 @@ const ledgerLines = () => {
 // The drill deliberately reads it the way a human recovering from a real loss
 // would have to: pull the blob, decompress it, count the rows. If that stops
 // working, the backup is decorative.
-const remoteLedgerLines = () => {
+const SHARD_RE = /^backup\/ledger\/(pre|\d{5})\.jsonl\.gz$/;
+const shardOrder = paths => [...paths].sort((a, b) => {
+  const k = p => p.includes("/pre.") ? -1 : parseInt(p.match(/(\d{5})\.jsonl\.gz$/)[1], 10);
+  return k(a) - k(b);
+});
+const remoteLedgerText = () => {
   const files = branchFiles();
+  const unGz = v => {
+    const buf = Buffer.isBuffer(v) ? v : Buffer.from(v, "binary");
+    return zlib.gunzipSync(buf).toString("utf8");
+  };
+  // The archive is stored as seq-range shards; a human recovering from a real
+  // loss has to pull every shard and concatenate them IN ORDER. Reassembling
+  // here rather than trusting a single blob is the point — a drill that reads
+  // one file would pass even if the shard set were unorderable or incomplete.
+  const shards = shardOrder(Object.keys(files).filter(k => SHARD_RE.test(k)));
+  if (shards.length) { try { return shards.map(k => unGz(files[k])).join(""); } catch { return null; } }
   const gzipped = files["backup/ledger.jsonl.gz"];
-  if (gzipped != null) {
-    try {
-      const buf = Buffer.isBuffer(gzipped) ? gzipped : Buffer.from(gzipped, "binary");
-      return zlib.gunzipSync(buf).toString("utf8").split("\n").filter(Boolean).length;
-    } catch { return null; }
-  }
+  if (gzipped != null) { try { return unGz(gzipped); } catch { return null; } }
   const plain = files["backup/ledger.jsonl"];   // pre-compression backups
-  return plain ? plain.split("\n").filter(Boolean).length : null;
+  return plain != null ? plain : null;
+};
+const remoteLedgerLines = () => {
+  const t = remoteLedgerText();
+  return t === null ? null : t.split("\n").filter(Boolean).length;
 };
 
 function seedArchive(rows = 500) {

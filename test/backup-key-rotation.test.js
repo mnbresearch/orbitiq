@@ -172,7 +172,13 @@ test("a key this boot cannot read is a file this boot cannot write", async () =>
     // The guard must be surgical. If it froze the whole backup, the ledger
     // would stop being persisted and the rotation would cost the archive
     // instead of the accounts — a different disaster, not a fix.
-    assert.ok(fileAt("backup/ledger.jsonl.gz"), "the ledger stopped being backed up");
+    const shardPaths = (trees.get(branchTree) || []).map(e => e.path)
+      .filter(p => /^backup\/ledger\/(pre|\d{5})\.jsonl\.gz$/.test(p));
+    assert.ok(shardPaths.length, "the ledger stopped being backed up");
+    const back = shardPaths.sort().map(p => zlib.gunzipSync(fileAt(p)).toString("utf8")).join("");
+    assert.equal(back, LEDGER_TEXT,
+      "the ledger came back altered while the secrets were being protected — the guard must be "
+      + "surgical, not merely loud");
     assert.ok(fileAt("backup/manifest.json"), "the manifest stopped being written");
   });
 
