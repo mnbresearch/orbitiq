@@ -1,0 +1,129 @@
+{
+ "plausible": false,
+ "implausibleReasons": [
+  "payload.sigmaR slope 7.4647 km/day exceeds 5 km/day — faster than any published characterisation of TLE degradation",
+  "payload.sigmaI slope 69.5796 km/day exceeds 25 km/day — faster than any published characterisation of TLE degradation"
+ ],
+ "version": "covcal-v1-2026-09",
+ "generatedAt": "2026-10-10T10:50:06.693Z",
+ "snapshots": 14,
+ "snapshotSpanDays": 13.03,
+ "objectsWithMultipleElementSets": 3363,
+ "pairsAttempted": 20099,
+ "pairsUsable": 20098,
+ "byKind": {
+  "payload": {
+   "bins": [
+    {
+     "lagFrom": 0,
+     "lagTo": 0.5,
+     "midLagDays": 0.25,
+     "n": 1900,
+     "sigmaR": 0.0587,
+     "sigmaI": 0.8268,
+     "sigmaC": 0.0523,
+     "outlierFractionInTrack": 0.1468
+    },
+    {
+     "lagFrom": 0.5,
+     "lagTo": 1,
+     "midLagDays": 0.75,
+     "n": 7382,
+     "sigmaR": 0.1342,
+     "sigmaI": 4.4686,
+     "sigmaC": 0.1335,
+     "outlierFractionInTrack": 0.0624
+    },
+    {
+     "lagFrom": 1,
+     "lagTo": 2,
+     "midLagDays": 1.5,
+     "n": 10263,
+     "sigmaR": 0.1719,
+     "sigmaI": 5.7981,
+     "sigmaC": 0.168,
+     "outlierFractionInTrack": 0.1224
+    },
+    {
+     "lagFrom": 2,
+     "lagTo": 3,
+     "midLagDays": 2.5,
+     "n": 396,
+     "sigmaR": 0.4933,
+     "sigmaI": 24.595,
+     "sigmaC": 0.3099,
+     "outlierFractionInTrack": 0.1364
+    },
+    {
+     "lagFrom": 3,
+     "lagTo": 5,
+     "midLagDays": 4,
+     "n": 106,
+     "sigmaR": 1.7054,
+     "sigmaI": 75.0346,
+     "sigmaC": 0.7715,
+     "outlierFractionInTrack": 0.3491
+    },
+    {
+     "lagFrom": 5,
+     "lagTo": 7,
+     "midLagDays": 6,
+     "n": 20,
+     "sigmaR": 453.8663,
+     "sigmaI": 3878.4056,
+     "sigmaC": 1.4336,
+     "outlierFractionInTrack": 0
+    }
+   ],
+   "fit": {
+    "sigmaR": {
+     "a": 0,
+     "b": 7.4647,
+     "bins": 6,
+     "n": 20067
+    },
+    "sigmaI": {
+     "a": 0,
+     "b": 69.5796,
+     "bins": 6,
+     "n": 20067
+    },
+    "sigmaC": {
+     "a": 0.023,
+     "b": 0.1125,
+     "bins": 6,
+     "n": 20067
+    }
+   },
+   "pairs": 20080
+  },
+  "rocket body": {
+   "bins": [
+    {
+     "lagFrom": 1,
+     "lagTo": 2,
+     "midLagDays": 1.5,
+     "n": 9,
+     "sigmaR": 0.3865,
+     "sigmaI": 12.7666,
+     "sigmaC": 0.0476,
+     "outlierFractionInTrack": 0.3333
+    }
+   ],
+   "fit": {
+    "sigmaR": null,
+    "sigmaI": null,
+    "sigmaC": null
+   },
+   "pairs": 18
+  }
+ },
+ "method": "For each object, successive published element sets are paired. The older set is propagated to the newer set's epoch and the position difference is decomposed in the RIC frame of the newer state. Spread is summarised with the median absolute deviation scaled by 1.4826, not the standard deviation, so that manoeuvres and bad element sets in the tail cannot dominate. A weighted straight line is fitted through the binned values, with the slope clamped at zero.",
+ "limits": "This measures agreement between successive element sets, not accuracy against the true orbit. Both sets come from the same sensor network and fitting process, so shared systematic error cancels in the difference and the true uncertainty is LARGER than shown — by an amount public data cannot reveal. In the other direction, manoeuvres between the two epochs appear as residuals and inflate the spread. Because of the first effect these figures are used only as a lower bound: they can widen the covariance used for probability of collision, never narrow it.",
+ "usage": "Applied as a floor. Where the modelled sigma is already wider, the model stands. Where the model is tighter than objects' own element sets agree with each other, the model is over-confident and the measured value is used instead.",
+ "computeMs": 533,
+ "catalogueSize": 16695,
+ "sampleModulo": 5,
+ "usable": false,
+ "notUsableBecause": "the fitted values are outside what element-set disagreement can plausibly be, so this run is not measuring what it is supposed to measure: payload.sigmaR slope 7.4647 km/day exceeds 5 km/day — faster than any published characterisation of TLE degradation; payload.sigmaI slope 69.5796 km/day exceeds 25 km/day — faster than any published characterisation of TLE degradation. Rejected in full rather than clamped, because a fit that came out this wrong is not trustworthy just below the ceiling either."
+}
