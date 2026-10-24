@@ -1,0 +1,124 @@
+{
+ "plausible": true,
+ "implausibleReasons": [],
+ "version": "covcal-v1-2026-09",
+ "generatedAt": "2026-10-24T09:09:50.762Z",
+ "snapshots": 14,
+ "snapshotSpanDays": 13.93,
+ "objectsWithMultipleElementSets": 3377,
+ "pairsAttempted": 20197,
+ "pairsUsable": 20197,
+ "byKind": {
+  "payload": {
+   "bins": [
+    {
+     "lagFrom": 0,
+     "lagTo": 0.5,
+     "midLagDays": 0.25,
+     "n": 3558,
+     "sigmaR": 0.0586,
+     "sigmaI": 0.9854,
+     "sigmaC": 0.0488,
+     "outlierFractionInTrack": 0.2069
+    },
+    {
+     "lagFrom": 0.5,
+     "lagTo": 1,
+     "midLagDays": 0.75,
+     "n": 6328,
+     "sigmaR": 0.1583,
+     "sigmaI": 7.7396,
+     "sigmaC": 0.1371,
+     "outlierFractionInTrack": 0.0501
+    },
+    {
+     "lagFrom": 1,
+     "lagTo": 2,
+     "midLagDays": 1.5,
+     "n": 9423,
+     "sigmaR": 0.2125,
+     "sigmaI": 11.8093,
+     "sigmaC": 0.1867,
+     "outlierFractionInTrack": 0.109
+    },
+    {
+     "lagFrom": 2,
+     "lagTo": 3,
+     "midLagDays": 2.5,
+     "n": 753,
+     "sigmaR": 0.4883,
+     "sigmaI": 34.6375,
+     "sigmaC": 0.297,
+     "outlierFractionInTrack": 0.0823
+    },
+    {
+     "lagFrom": 3,
+     "lagTo": 5,
+     "midLagDays": 4,
+     "n": 86,
+     "sigmaR": 0.6382,
+     "sigmaI": 26.6376,
+     "sigmaC": 0.5849,
+     "outlierFractionInTrack": 0.2674
+    },
+    {
+     "lagFrom": 5,
+     "lagTo": 7,
+     "midLagDays": 6,
+     "n": 19,
+     "sigmaR": 2.6079,
+     "sigmaI": 224.5749,
+     "sigmaC": 0.8902,
+     "outlierFractionInTrack": 0.3158
+    },
+    {
+     "lagFrom": 7,
+     "lagTo": 10,
+     "midLagDays": 8.5,
+     "n": 8,
+     "sigmaR": 1.8248,
+     "sigmaI": 3.4989,
+     "sigmaC": 0.3746,
+     "outlierFractionInTrack": 0.375
+    }
+   ],
+   "fit": {
+    "sigmaR": {
+     "a": 0.0035,
+     "b": 0.1636,
+     "bins": 7,
+     "n": 20175
+    },
+    "sigmaI": {
+     "a": 0,
+     "b": 11.1741,
+     "bins": 7,
+     "n": 20175
+    },
+    "sigmaC": {
+     "a": 0.0401,
+     "b": 0.103,
+     "bins": 7,
+     "n": 20175
+    }
+   },
+   "pairs": 20185
+  },
+  "rocket body": {
+   "bins": [],
+   "fit": {
+    "sigmaR": null,
+    "sigmaI": null,
+    "sigmaC": null
+   },
+   "pairs": 12
+  }
+ },
+ "method": "For each object, successive published element sets are paired. The older set is propagated to the newer set's epoch and the position difference is decomposed in the RIC frame of the newer state. Spread is summarised with the median absolute deviation scaled by 1.4826, not the standard deviation, so that manoeuvres and bad element sets in the tail cannot dominate. A weighted straight line is fitted through the binned values, with the slope clamped at zero.",
+ "limits": "This measures agreement between successive element sets, not accuracy against the true orbit. Both sets come from the same sensor network and fitting process, so shared systematic error cancels in the difference and the true uncertainty is LARGER than shown — by an amount public data cannot reveal. In the other direction, manoeuvres between the two epochs appear as residuals and inflate the spread. Because of the first effect these figures are used only as a lower bound: they can widen the covariance used for probability of collision, never narrow it.",
+ "usage": "Applied as a floor. Where the modelled sigma is already wider, the model stands. Where the model is tighter than objects' own element sets agree with each other, the model is over-confident and the measured value is used instead.",
+ "computeMs": 564,
+ "catalogueSize": 16793,
+ "sampleModulo": 5,
+ "usable": true
+}
