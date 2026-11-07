@@ -1,0 +1,93 @@
+{
+  "generatedAt": "2026-11-07T10:50:18.041Z",
+  "catalogSize": 16983,
+  "screenedPopulation": 6000,
+  "totalMs": 750391,
+  "failed": 0,
+  "screens": [
+    {
+      "org": null,
+      "hours": 3,
+      "thresholdKm": 10,
+      "events": 100,
+      "computeMs": 25040
+    },
+    {
+      "org": null,
+      "hours": 12,
+      "thresholdKm": 25,
+      "events": 100,
+      "computeMs": 111218
+    },
+    {
+      "org": null,
+      "hours": 24,
+      "thresholdKm": 25,
+      "events": 100,
+      "computeMs": 233603
+    },
+    {
+      "org": null,
+      "hours": 24,
+      "thresholdKm": 50,
+      "events": 100,
+      "computeMs": 226728
+    },
+    {
+      "org": "spacex",
+      "hours": 12,
+      "thresholdKm": 25,
+      "events": 100,
+      "computeMs": 108135
+    },
+    {
+      "org": "spacex",
+      "hours": 3,
+      "thresholdKm": 10,
+      "events": 100,
+      "computeMs": 24859
+    },
+    {
+      "org": "oneweb",
+      "hours": 12,
+      "thresholdKm": 25,
+      "events": 25,
+      "computeMs": 3589
+    },
+    {
+      "org": "oneweb",
+      "hours": 3,
+      "thresholdKm": 10,
+      "events": 1,
+      "computeMs": 3195
+    },
+    {
+      "org": "kuiper",
+      "hours": 12,
+      "thresholdKm": 25,
+      "events": 100,
+      "computeMs": 3362
+    },
+    {
+      "org": "kuiper",
+      "hours": 3,
+      "thresholdKm": 10,
+      "events": 6,
+      "computeMs": 3082
+    },
+    {
+      "org": "iridium",
+      "hours": 12,
+      "thresholdKm": 25,
+      "events": 68,
+      "computeMs": 3054
+    },
+    {
+      "org": "iridium",
+      "hours": 3,
+      "thresholdKm": 10,
+      "events": 2,
+      "computeMs": 2729
+    }
+  ]
+}
