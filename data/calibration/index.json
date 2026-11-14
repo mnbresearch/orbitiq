@@ -1,0 +1,117 @@
+{
+ "plausible": false,
+ "implausibleReasons": [
+  "payload.sigmaI slope 26.5451 km/day exceeds 25 km/day — faster than any published characterisation of TLE degradation"
+ ],
+ "version": "covcal-v1-2026-09",
+ "generatedAt": "2026-11-14T11:47:33.264Z",
+ "snapshots": 14,
+ "snapshotSpanDays": 13.01,
+ "objectsWithMultipleElementSets": 3403,
+ "pairsAttempted": 20362,
+ "pairsUsable": 20362,
+ "byKind": {
+  "payload": {
+   "bins": [
+    {
+     "lagFrom": 0,
+     "lagTo": 0.5,
+     "midLagDays": 0.25,
+     "n": 685,
+     "sigmaR": 0.0827,
+     "sigmaI": 0.9559,
+     "sigmaC": 0.0803,
+     "outlierFractionInTrack": 0.162
+    },
+    {
+     "lagFrom": 0.5,
+     "lagTo": 1,
+     "midLagDays": 0.75,
+     "n": 8968,
+     "sigmaR": 0.1558,
+     "sigmaI": 4.1235,
+     "sigmaC": 0.1327,
+     "outlierFractionInTrack": 0.0949
+    },
+    {
+     "lagFrom": 1,
+     "lagTo": 2,
+     "midLagDays": 1.5,
+     "n": 10297,
+     "sigmaR": 0.2098,
+     "sigmaI": 8.7627,
+     "sigmaC": 0.1663,
+     "outlierFractionInTrack": 0.0902
+    },
+    {
+     "lagFrom": 2,
+     "lagTo": 3,
+     "midLagDays": 2.5,
+     "n": 290,
+     "sigmaR": 0.4811,
+     "sigmaI": 32.9964,
+     "sigmaC": 0.3609,
+     "outlierFractionInTrack": 0.1207
+    },
+    {
+     "lagFrom": 3,
+     "lagTo": 5,
+     "midLagDays": 4,
+     "n": 93,
+     "sigmaR": 0.533,
+     "sigmaI": 18.2121,
+     "sigmaC": 0.481,
+     "outlierFractionInTrack": 0.2581
+    },
+    {
+     "lagFrom": 5,
+     "lagTo": 7,
+     "midLagDays": 6,
+     "n": 9,
+     "sigmaR": 353.0506,
+     "sigmaI": 2126.6058,
+     "sigmaC": 0.5609,
+     "outlierFractionInTrack": 0.1111
+    }
+   ],
+   "fit": {
+    "sigmaR": {
+     "a": 0,
+     "b": 3.3399,
+     "bins": 6,
+     "n": 20342
+    },
+    "sigmaI": {
+     "a": 0,
+     "b": 26.5451,
+     "bins": 6,
+     "n": 20342
+    },
+    "sigmaC": {
+     "a": 0.0674,
+     "b": 0.0741,
+     "bins": 6,
+     "n": 20342
+    }
+   },
+   "pairs": 20350
+  },
+  "rocket body": {
+   "bins": [],
+   "fit": {
+    "sigmaR": null,
+    "sigmaI": null,
+    "sigmaC": null
+   },
+   "pairs": 12
+  }
+ },
+ "method": "For each object, successive published element sets are paired. The older set is propagated to the newer set's epoch and the position difference is decomposed in the RIC frame of the newer state. Spread is summarised with the median absolute deviation scaled by 1.4826, not the standard deviation, so that manoeuvres and bad element sets in the tail cannot dominate. A weighted straight line is fitted through the binned values, with the slope clamped at zero.",
+ "limits": "This measures agreement between successive element sets, not accuracy against the true orbit. Both sets come from the same sensor network and fitting process, so shared systematic error cancels in the difference and the true uncertainty is LARGER than shown — by an amount public data cannot reveal. In the other direction, manoeuvres between the two epochs appear as residuals and inflate the spread. Because of the first effect these figures are used only as a lower bound: they can widen the covariance used for probability of collision, never narrow it.",
+ "usage": "Applied as a floor. Where the modelled sigma is already wider, the model stands. Where the model is tighter than objects' own element sets agree with each other, the model is over-confident and the measured value is used instead.",
+ "computeMs": 411,
+ "catalogueSize": 16896,
+ "sampleModulo": 5,
+ "usable": false,
+ "notUsableBecause": "the fitted values are outside what element-set disagreement can plausibly be, so this run is not measuring what it is supposed to measure: payload.sigmaI slope 26.5451 km/day exceeds 25 km/day — faster than any published characterisation of TLE degradation. Rejected in full rather than clamped, because a fit that came out this wrong is not trustworthy just below the ceiling either."
+}
