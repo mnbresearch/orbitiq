@@ -37,6 +37,7 @@
     <button class="tab active" data-view="ops">Operations</button>
     <button class="tab" data-view="intel">Intel</button>
     <button class="tab" data-view="fleet">Fleet</button>
+    <button class="tab" data-view="ai">AI Copilot</button>
     <button class="tab" data-view="analytics">Analytics</button>
     <button class="tab" data-view="traffic">Traffic</button>
     <button class="tab" data-view="tools">Tools</button>
@@ -281,6 +282,8 @@
 <!-- analytics view -->
 <!-- v14: fleet operations — registry, encounters, manoeuvre planner, alert policy -->
 <div class="view" id="view-fleet"></div>
+<!-- Autonomous Multi-Agent AI Copilot Console -->
+<div class="view" id="view-ai"></div>
 
 <div class="view" id="view-analytics">
   <div class="view-inner">
@@ -476,6 +479,17 @@
     }));
   // Surface pushed conjunction alerts wherever the user happens to be.
   window.addEventListener("orbitiq:alert", e => onAlert(e.detail));
+</script>
+<script type="module">
+  // Autonomous Multi-Agent AI Operations Console. Mounted lazily on first open.
+  import { mountAgentOps } from "/js/agentops.js";
+  let aiMounted = false;
+  document.querySelectorAll('.tab[data-view="ai"]').forEach(b =>
+    b.addEventListener("click", () => {
+      if (aiMounted) return;
+      aiMounted = true;
+      mountAgentOps(document.getElementById("view-ai"));
+    }));
 </script>
 </body>
 </html>

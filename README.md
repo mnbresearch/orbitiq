@@ -8,6 +8,8 @@ OrbitIQ turns free public orbital data into screening-grade space traffic intell
 
 **Operations.** Live 3D globe tracking thousands of objects via SGP4, org pairing (scope everything to one operator), a time machine to scrub the whole sky ±6 h, aurora ovals during geomagnetic storms, launch feeds, and a command palette (⌘K).
 
+**Autonomous AI Copilot (v16).** Multi-agent space operations powered by xAI Grok, OpenAI, Gemini, or deterministic aerospace heuristics. Includes real-time Flight Safety Officer (FSO) triage with NOAA Kp atmospheric drag expansion modeling, Tsiolkovsky propellant mass optimization (grams of fuel per avoidance burn), secondary collision pre-screening, automated FCC 47 CFR § 25.114 / ISO 24113 proof-of-diligence drafting, and an in-console tactical natural language assistant. Everything runs at $0 with zero paid integrations.
+
 **Screening & safety.** Coarse-to-fine conjunction screening with 3D spatial hashing, TCA refinement, 2-D collision probability with TLE-age-scaled covariance, background scans per workspace, webhooks and WebSocket alert push.
 
 **Intelligence (the moat).** Every detection — conjunction, maneuver, pattern-of-life anomaly, fleet risk score, re-entry candidate, space-weather snapshot — is appended to a timestamped ledger at detection time. This history cannot be reconstructed from public data later; it compounds every day the platform runs. On top of it: Fleet Risk Index with grades, weekly fleet intelligence reports with public shareable links (`/r/{token}`), daily trend analytics, and constellation architecture analysis (altitude shells, RAAN plane occupancy, inclination families).
@@ -53,6 +55,9 @@ npm install && node server.js        # http://localhost:3000
 | `ORBITIQ_ADMIN_KEY` | stable admin API key (else printed once at boot) |
 | `ORBITIQ_GH_TOKEN` | fine-grained token (Contents RW) → archive persistence |
 | `ORBITIQ_MIRROR_BASE` | override the data-mirror URL |
+| `GROK_API_KEY` / `XAI_API_KEY` | (optional) xAI Grok model key for AI Copilot |
+| `OPENAI_API_KEY` | (optional) OpenAI model key / endpoint |
+| `GEMINI_API_KEY` | (optional) Google Gemini model key |
 | `PORT` | listen port |
 
 Deploy: `render.yaml` (Blueprint), `Dockerfile`, `fly.toml` included. Enable the **Data mirror** workflow in Actions and run it once to seed live data.

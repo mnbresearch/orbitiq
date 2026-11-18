@@ -619,7 +619,7 @@ $("typefilter").addEventListener("change", e => { selectedType = e.target.value;
 $("speed").addEventListener("change", e => { timeSpeed = parseFloat(e.target.value); });
 
 // ---------------- views ----------------
-const VIEWS = ["intel", "analytics", "traffic", "tools", "catalog"];
+const VIEWS = ["intel", "fleet", "ai", "analytics", "traffic", "tools", "catalog"];
 function switchView(v) {
   document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x.dataset.view === v));
   for (const name of VIEWS) $("view-" + name)?.classList.toggle("active", v === name);
@@ -1069,10 +1069,14 @@ function paletteActions() {
   return [
     { k: "View", label: "Operations", run: () => switchView("ops") },
     { k: "View", label: "Intelligence console", run: () => switchView("intel") },
+    { k: "View", label: "Fleet operations", run: () => switchView("fleet") },
+    { k: "View", label: "Autonomous AI Copilot", run: () => { switchView("ai"); document.querySelector(".tab[data-view='ai']")?.click(); } },
     { k: "View", label: "Analytics", run: () => switchView("analytics") },
     { k: "View", label: "Traffic & congestion", run: () => switchView("traffic") },
     { k: "View", label: "Mission tools", run: () => switchView("tools") },
     { k: "View", label: "Catalog", run: () => switchView("catalog") },
+    { k: "AI",   label: "AI: Triage critical close approaches", run: () => { switchView("ai"); document.querySelector(".tab[data-view='ai']")?.click(); } },
+    { k: "AI",   label: "AI: Synthesize fuel-optimal avoidance burn", run: () => { switchView("ai"); document.querySelector(".tab[data-view='ai']")?.click(); } },
     { k: "Action", label: "Run conjunction screening", run: () => { switchView("ops"); $("runconj").click(); } },
     { k: "Action", label: "Fly to ISS", run: () => { const s = sats.find(x => x.name.startsWith("ISS")); if (s) { switchView("ops"); selectSat(s, true); } } },
     { k: "Action", label: "Toggle debris visibility", run: () => { const f = $("typefilter"); f.value = f.value === "DEBRIS" ? "all" : "DEBRIS"; f.dispatchEvent(new Event("change")); } },
@@ -1114,8 +1118,13 @@ addEventListener("keydown", e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); pal.classList.contains("open") ? closePalette() : openPalette(); return; }
   if (e.key === "Escape") { closePalette(); $("drawer").classList.remove("open"); return; }
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA") return;
-  const map = { 1: "ops", 2: "intel", 3: "analytics", 4: "traffic", 5: "tools", 6: "catalog" };
-  if (map[e.key]) switchView(map[e.key]);
+  const map = { 1: "ops", 2: "intel", 3: "fleet", 4: "ai", 5: "analytics", 6: "traffic", 7: "tools", 8: "catalog" };
+  if (map[e.key]) {
+    switchView(map[e.key]);
+    if (map[e.key] === "fleet" || map[e.key] === "ai") {
+      document.querySelector(`.tab[data-view='${map[e.key]}']`)?.click();
+    }
+  }
 });
 
 // ============================================================

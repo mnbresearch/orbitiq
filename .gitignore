@@ -1,4 +1,5 @@
 node_modules/
+package-lock.json
 cache/
 nohup.out
 
@@ -11,4 +12,5 @@ data/store.json
 data/fleet.json
 data/trend.json
 data/ledger.jsonl
+data/calibration.json
 out/

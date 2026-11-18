@@ -41,6 +41,7 @@ import { getSpaceWeather, environmentForLedger } from "./src/spaceweather.js";
 // The archive records what we saw; these record and export what the operator
 // did about it. That second half is the part a competitor cannot backfill.
 import { mountEvidenceRoutes } from "./src/evidenceroutes.js";
+import { mountAgentRoutes } from "./src/agentroutes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -1579,6 +1580,7 @@ api.post("/fleet/manoeuvre/to-pc", requireWs, requirePlan("operator"), async (re
 // nobody reads it end to end before changing it, which is exactly how the
 // /api/v1 mount-ordering bug survived here unnoticed.
 mountEvidenceRoutes(api, { requireWs, requirePlan, fleet, ledger, getSatellites });
+mountAgentRoutes(api, { requireWs, requirePlan, fleet, ledger, getSatellites });
 
 // Run the watch on demand rather than waiting for the next sweep.
 api.post("/fleet/watch/run", requireWs, requirePlan("tracker"), async (req, res) => {
