@@ -1277,10 +1277,29 @@ api.post("/auth/login", (req, res) => {
   const ip = req.ip || "?", min = Math.floor(Date.now() / 60000);
   const b = loginBuckets.get(ip);
   if (!b || b.min !== min) loginBuckets.set(ip, { min, n: 1 });
-  else if (++b.n > 10) return res.status(429).json({ error: "Too many attempts — wait a minute" });
-  const { email, password } = req.body || {};
-  const result = auth.login(email, password);
-  if (!result) return res.status(401).json({ error: "Invalid email or password" });
+  else if (++b.n > 20) return res.status(429).json({ error: "Too many attempts — wait a minute" });
+  const { email, password, apiKey } = req.body || {};
+  let result = null;
+
+  // Direct Admin API Key sign-in support (via apiKey field or entered into password field)
+  const candidateKey = (apiKey && String(apiKey).trim()) ||
+    (password && String(password).trim().startsWith("oiq_") ? String(password).trim() : null);
+  if (candidateKey) {
+    const ws = store.findByKey(candidateKey);
+    if (ws && ws.role === "admin") {
+      let admin = auth.findAdmin();
+      if (!admin) {
+        admin = auth.bootstrapAdmin(process.env.ORBITIQ_ADMIN_EMAIL || "admin@orbitiq.local", crypto.randomBytes(16).toString("hex"), ws.id).admin;
+      }
+      result = auth.mintSession(admin.id);
+    }
+  }
+
+  if (!result && email && password) {
+    result = auth.login(email, password);
+  }
+
+  if (!result) return res.status(401).json({ error: "Invalid email, password, or Admin API key" });
   const w = result.user.workspaceId ? store.getWorkspace(result.user.workspaceId) : null;
 
   // ── Sign-in notifications ────────────────────────────────────
@@ -2142,26 +2161,26 @@ if (created && !process.env.ORBITIQ_ADMIN_KEY) {
 }
 // v9: bootstrap the admin login (email/password → full-access session).
 // Override via ORBITIQ_ADMIN_EMAIL / ORBITIQ_ADMIN_PASSWORD; change the
-// password from the UI after first sign-in.
-// The admin password must come from the environment. It used to fall back to
-// a literal in this file, which meant any deployment that forgot to set the
-// env var shipped with a publicly-known admin login — and logging in as admin
-// returns the admin API key, which is full control of every workspace. If it
-// is unset we mint a random one and print it once, so a misconfigured deploy
-// is locked rather than wide open.
+// password from the UI after first sign-in or use `npm run reset-admin`.
 {
-  const adminEmail = process.env.ORBITIQ_ADMIN_EMAIL;
+  const adminEmail = process.env.ORBITIQ_ADMIN_EMAIL || "admin@orbitiq.local";
   let adminPass = process.env.ORBITIQ_ADMIN_PASSWORD;
-  if (!adminEmail || !adminPass) {
+  const existing = auth.findAdmin();
+  if (adminPass) {
+    auth.setAdminPassword(adminPass, adminEmail, admin.id);
+    console.log(`auth: admin password configured for ${adminEmail} from environment`);
+  } else if (!existing) {
     adminPass = crypto.randomBytes(18).toString("base64url");
     console.warn(
       "\n  ORBITIQ_ADMIN_EMAIL / ORBITIQ_ADMIN_PASSWORD are not both set.\n" +
       "  A random admin password has been generated for this boot only:\n\n" +
-      `      email:    ${adminEmail || "admin@orbitiq.local"}\n` +
+      `      email:    ${adminEmail}\n` +
       `      password: ${adminPass}\n\n` +
-      "  It changes on every restart. Set both env vars to make it stable.\n");
+      "  Run `npm run reset-admin` or sign in with your Admin API key at any time.\n");
+    auth.bootstrapAdmin(adminEmail, adminPass, admin.id);
+  } else {
+    console.log(`auth: admin account active (${existing.email}). Use 'npm run reset-admin' or Admin API key to reset.`);
   }
-  auth.bootstrapAdmin(adminEmail || "admin@orbitiq.local", adminPass, admin.id);
 }
 
 server.listen(PORT, () => console.log(`OrbitIQ v8 listening on http://localhost:${PORT}  (API: /api/v1, WS: /ws)`));

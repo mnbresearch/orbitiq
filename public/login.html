@@ -37,7 +37,13 @@
     <label>Email</label><input id="li-email" type="email" autocomplete="email" required>
     <label>Password</label><input id="li-pass" type="password" autocomplete="current-password" required>
     <button id="li-btn" type="submit">Sign in</button>
-    <div class="alt">No account? <a id="to-request">Request access</a></div>
+    <div class="alt">No account? <a id="to-request">Request access</a> · <a id="to-key">Admin Key</a></div>
+  </form>
+
+  <form id="key-form" style="display:none">
+    <label>Admin Workspace API Key</label><input id="ky-key" type="password" placeholder="oiq_..." required>
+    <button id="ky-btn" type="submit">Sign in with Admin Key</button>
+    <div class="alt">Have credentials? <a id="to-login-from-key">Standard login</a></div>
   </form>
 
   <form id="request-form" style="display:none">
@@ -57,13 +63,37 @@
 const $ = id => document.getElementById(id);
 const msg = (t, ok) => { const m = $("msg"); m.textContent = t; m.className = "msg " + (ok ? "ok" : "err"); };
 function mode(login) {
-  $("login-form").style.display = login ? "" : "none";
-  $("request-form").style.display = login ? "none" : "";
-  $("mode-sub").textContent = login ? "Sign in to your workspace" : "Request access — the operator reviews every request";
+  $("login-form").style.display = login === "login" ? "" : "none";
+  $("key-form").style.display = login === "key" ? "" : "none";
+  $("request-form").style.display = login === "request" ? "" : "none";
+  $("mode-sub").textContent = login === "key"
+    ? "Enter your Admin Workspace API Key (oiq_...)"
+    : (login === "login" ? "Sign in to your workspace" : "Request access — the operator reviews every request");
   $("msg").className = "msg";
 }
-$("to-request").onclick = () => mode(false);
-$("to-login").onclick = () => mode(true);
+$("to-request").onclick = () => mode("request");
+$("to-login").onclick = () => mode("login");
+$("to-key").onclick = () => mode("key");
+$("to-login-from-key").onclick = () => mode("login");
+
+$("key-form").onsubmit = async e => {
+  e.preventDefault();
+  const b = $("ky-btn"); b.disabled = true; b.textContent = "Authenticating…";
+  try {
+    const r = await fetch("/api/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: $("ky-key").value.trim() })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "Key authentication failed");
+    localStorage.setItem("orbitiq-session", d.token);
+    localStorage.setItem("orbitiq-user", JSON.stringify(d.user));
+    if (d.workspace && d.workspace.apiKey) localStorage.setItem("orbitiq-apikey", d.workspace.apiKey);
+    msg("Admin authenticated — redirecting to Admin Portal…", true);
+    location.href = "/admin.html";
+  } catch (err) { msg(err.message, false); }
+  b.disabled = false; b.textContent = "Sign in with Admin Key";
+};
 
 $("login-form").onsubmit = async e => {
   e.preventDefault();

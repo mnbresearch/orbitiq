@@ -97,9 +97,29 @@ async function api(p, opts) {
 }
 
 (async function boot() {
-  if (!token) return location.href = "/login.html";
+  const urlParamKey = new URLSearchParams(location.search).get("apiKey") || new URLSearchParams(location.search).get("key");
+  if (urlParamKey) {
+    apiKey = urlParamKey;
+    localStorage.setItem("orbitiq-apikey", apiKey);
+  }
+  let curToken = localStorage.getItem("orbitiq-session");
+  if (!curToken && apiKey) {
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey })
+      });
+      const data = await res.json();
+      if (data.token) {
+        curToken = data.token;
+        localStorage.setItem("orbitiq-session", curToken);
+        localStorage.setItem("orbitiq-user", JSON.stringify(data.user));
+      }
+    } catch {}
+  }
+  if (!curToken) return location.href = "/login.html";
   try {
-    const me = await (await fetch("/api/auth/me", { headers: { Authorization: "Bearer " + token } })).json();
+    const me = await (await fetch("/api/auth/me", { headers: { Authorization: "Bearer " + curToken } })).json();
     if (!me.user || me.user.role !== "admin") { toast("Admin access required"); return setTimeout(() => location.href = "/login.html", 1200); }
     $("who").textContent = me.user.email;
     if (me.workspace && me.workspace.apiKey) { apiKey = me.workspace.apiKey; localStorage.setItem("orbitiq-apikey", apiKey); }

@@ -86,6 +86,7 @@ export function createUser(email, name, password, role, workspaceId) {
 export const findUser = email => db.users.find(u => u.email === String(email).toLowerCase().trim()) || null;
 export const getUser = id => db.users.find(u => u.id === id) || null;
 export const listUsers = () => db.users.map(({ passHash, ...u }) => u);
+export const findAdmin = () => db.users.find(u => u.role === "admin") || null;
 
 export function bootstrapAdmin(email, password, workspaceId) {
   let admin = db.users.find(u => u.role === "admin");
@@ -97,6 +98,21 @@ export function bootstrapAdmin(email, password, workspaceId) {
   function name(e) { return "Admin (" + e.split("@")[0] + ")"; }
   console.log(`auth: admin account bootstrapped for ${email} — change the password after first login`);
   return { admin, created: true };
+}
+
+export function setAdminPassword(password, email, workspaceId) {
+  let admin = db.users.find(u => u.role === "admin");
+  if (!admin) {
+    admin = createUser(email || "admin@orbitiq.local", "Admin (" + (email || "admin").split("@")[0] + ")", password, "admin", workspaceId);
+  } else {
+    if (email) admin.email = String(email).toLowerCase().trim();
+    if (workspaceId) admin.workspaceId = workspaceId;
+    admin.passHash = hashPassword(password);
+    admin.mustChangePassword = false;
+    save();
+  }
+  flush();
+  return admin;
 }
 
 export function changePassword(userId, current, next) {
@@ -133,6 +149,21 @@ export function login(email, password) {
   u.lastSignInAt = new Date().toISOString();
   if (firstSignIn) u.firstSignInAt = u.lastSignInAt;
   save();
+  return { token, user: u, firstSignIn };
+}
+
+export function mintSession(userId) {
+  const u = getUser(userId);
+  if (!u) return null;
+  for (const [t, s] of Object.entries(db.sessions)) if (s.exp < Date.now()) delete db.sessions[t];
+  const token = crypto.randomBytes(32).toString("base64url");
+  db.sessions[token] = { userId: u.id, exp: Date.now() + SESSION_TTL };
+  const firstSignIn = !u.signInCount;
+  u.signInCount = (u.signInCount || 0) + 1;
+  u.lastSignInAt = new Date().toISOString();
+  if (firstSignIn) u.firstSignInAt = u.lastSignInAt;
+  save();
+  flush();
   return { token, user: u, firstSignIn };
 }
 
