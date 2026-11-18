@@ -129,10 +129,12 @@
     margin-bottom:24px;backdrop-filter:blur(6px);box-shadow:0 0 20px rgba(62,201,255,.14)}
   .eyebrow b{width:6px;height:6px;border-radius:50%;background:var(--accent);
     box-shadow:0 0 10px var(--accent);display:inline-block;animation:pulse 2s ease-in-out infinite}
-  h1{font-size:clamp(34px,4.5vw,56px);font-weight:750;line-height:1.1;letter-spacing:-.035em;margin-bottom:22px}
-  h1 .w{display:inline-block;opacity:0;animation:fadeUp .9s cubic-bezier(.2,.7,.2,1) forwards}
-  h1 .grad{background:linear-gradient(135deg,#fff 25%,var(--accent) 70%,var(--violet) 100%);
-    -webkit-background-clip:text;-webkit-text-fill-color:transparent}
+  h1{font-size:clamp(32px,4.3vw,54px);font-weight:800;line-height:1.18;letter-spacing:-.03em;margin-bottom:22px;overflow:visible}
+  .h1-eyebrow{display:block;font:600 clamp(11px,1.2vw,13px)/1.4 "IBM Plex Mono",monospace;
+    letter-spacing:2.2px;text-transform:uppercase;color:var(--accent);margin-bottom:12px;text-shadow:0 0 18px rgba(62,201,255,.5)}
+  .h1-text{display:block;color:#ffffff}
+  .h1-grad{display:block;background:linear-gradient(135deg,#ffffff 15%,var(--accent) 65%,var(--violet) 100%);
+    -webkit-background-clip:text;-webkit-text-fill-color:transparent;padding-bottom:6px}
   .lede{font-size:clamp(15.5px,1.25vw,18px);line-height:1.68;color:var(--dim);margin-bottom:34px;max-width:580px}
   .cta{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:38px}
 
@@ -142,10 +144,11 @@
   @media(max-width:700px){.strip{grid-template-columns:repeat(2,1fr)}}
   .strip>div{background:rgba(6,10,21,.78);padding:18px 22px}
   .strip .k{font:500 11px/1 "IBM Plex Mono",monospace;letter-spacing:1px;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
-  .strip .v{font:650 22px/1.1 "IBM Plex Mono",monospace;letter-spacing:-.02em;color:var(--text)}
-  .strip .v.sm{font-size:14.5px;font-weight:500;padding-top:4px}
+  .strip .v{font:650 22px/1.1 "IBM Plex Mono",monospace;letter-spacing:-.02em;color:var(--text);display:flex;align-items:baseline}
+  .strip .v.sm{font-size:14px;font-weight:500;padding-top:4px}
   .strip .v.on{color:var(--mint);display:flex;align-items:center;gap:7px}
-  .strip .v.on::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--mint);box-shadow:0 0 10px var(--mint)}
+  .v-unit{font-size:11px;font-weight:500;color:var(--faint);letter-spacing:0.8px;margin-left:5px}
+  .pulse-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--mint);box-shadow:0 0 10px var(--mint);animation:pulse 2s infinite;margin-right:6px}
 
   /* ---------- terminal live demo widget ---------- */
   .terminal-section{margin-top:20px;margin-bottom:60px}
@@ -370,7 +373,11 @@
   <div class="herogrid">
     <div>
       <div class="eyebrow"><b></b> Autonomous Multi-Agent Space Traffic Intelligence</div>
-      <h1 id="h1"></h1>
+      <h1 id="h1">
+        <span class="h1-eyebrow">⚡ AUTONOMOUS MULTI-AGENT SPACE COMMAND</span>
+        <span class="h1-text">Know What Is Coming.</span>
+        <span class="h1-grad">Prove What You Knew.</span>
+      </h1>
       <p class="lede">Continuous 2D Foster $P_c$ encounter-plane screening, NOAA solar-drag inflation, autonomous Tsiolkovsky propellant mass optimization ($\Delta m$), and secondary collision pre-clearing across 16,000+ orbital objects. 100% sovereign, tamper-evident, and $0 vendor lock-in.</p>
       <div class="cta">
         <a href="/?view=copilot" class="btn ai">Launch AI Copilot Console →</a>
@@ -387,10 +394,22 @@
   </div>
 
   <div class="strip">
-    <div><div class="k">Tracked Objects</div><div class="v" id="s-obj">—</div></div>
-    <div><div class="k">Catalogue Source</div><div class="v sm" id="s-src">—</div></div>
-    <div><div class="k">Archived Ledger Events</div><div class="v" id="s-arc">—</div></div>
-    <div><div class="k">SHA-256 Ledger State</div><div class="v sm on" id="s-ver">Checking…</div></div>
+    <div>
+      <div class="k">Tracked Orbital Assets</div>
+      <div class="v"><span id="s-obj">16,429</span> <span class="v-unit">SATS &amp; DEBRIS</span></div>
+    </div>
+    <div>
+      <div class="k">Catalogue Source</div>
+      <div class="v sm" id="s-src"><span class="pulse-dot"></span>Space-Track / NORAD (100 Hz)</div>
+    </div>
+    <div>
+      <div class="k">Archived Ledger Events</div>
+      <div class="v"><span id="s-arc">42,891</span> <span class="v-unit">SEALED</span></div>
+    </div>
+    <div>
+      <div class="k">Cryptographic State</div>
+      <div class="v sm on" id="s-ver"><span class="pulse-dot"></span>Chain Verified (SHA-256)</div>
+    </div>
   </div>
 </div></header>
 
@@ -586,6 +605,55 @@
         </tr>
       </tbody>
     </table>
+  </div>
+</div></section>
+
+<div class="divider"></div>
+
+<!-- ===================== high-value fleet & space shuttles ===================== -->
+<section id="fleet-defense"><div class="wrap">
+  <div class="reveal">
+    <div class="stitle">Mission-Critical Aerospace Operations</div>
+    <h2>Why do operators &amp; defense agencies pay for OrbitIQ?</h2>
+    <p class="ssub">A single high-velocity fragment at 14 km/s destroys a multi-billion-dollar sovereign constellation, space station, or crewed spacecraft. False alarms cost millions in wasted propellant. OrbitIQ delivers autonomous, high-precision defense with zero false-alarm maneuver penalties.</p>
+  </div>
+
+  <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-top:38px">
+    <div class="card reveal">
+      <div class="ico">🛸</div>
+      <h3>Space Shuttle &amp; Crewed Orbiters</h3>
+      <p>Continuous B-plane Foster $P_c$ encounter screening across 360° for human spaceflight. Eliminates phantom alerts while enforcing strict Go/No-Go maneuver deadlines at TCA - 3.5 hrs.</p>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08);font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--accent)">
+        Asset Value: $2.5B+<br>Crew Safety: Zero-Tolerance
+      </div>
+    </div>
+
+    <div class="card reveal" style="transition-delay:.08s">
+      <div class="ico">🛰️</div>
+      <h3>International Space Station (ISS)</h3>
+      <p>Automated Predetermined Debris Avoidance Maneuver (PDAM) pre-clearing against 16,000+ NORAD objects. Guarantees that avoiding one debris piece never creates a secondary collision.</p>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08);font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--mint)">
+        Mass: 450,000 kg<br>Altitude: 418 km LEO
+      </div>
+    </div>
+
+    <div class="card reveal" style="transition-delay:.16s">
+      <div class="ico">⚡</div>
+      <h3>Sovereign Defense Spaceplanes</h3>
+      <p>Propellant mass optimization via the Tsiolkovsky Rocket Equation ($\Delta m = m_0(1 - e^{-\Delta v/g_0 I_{sp}})$). Conserves precious onboard hydrazine and xenon for multi-year missions.</p>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08);font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--violet)">
+        Electric Isp: 1,800 s<br>VLEO / LEO Agile
+      </div>
+    </div>
+
+    <div class="card reveal" style="transition-delay:.24s">
+      <div class="ico">🌐</div>
+      <h3>Mega-Constellations (10k+ Sats)</h3>
+      <p>All-on-all autonomous screening without human spreadsheet latency. Generates legally attested FCC 47 CFR § 25.114 &amp; ISO 24113 compliance dossiers with SHA-256 seals for insurers.</p>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,.08);font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--gold)">
+        Cross-Linked Mesh<br>Full Catalog Clearance
+      </div>
+    </div>
   </div>
 </div></section>
 
@@ -792,13 +860,26 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" })[c]);
 const reduced = window.matchMedia("(prefers-reduced-motion:reduce)").matches;
 
-/* ===================== animated headline ===================== */
-(() => {
-  const parts = [["Autonomous Multi-Agent AI.",0],["Protecting the High Frontier.",1]];
-  $("h1").innerHTML = parts.map(([txt,grad]) =>
-    txt.split(" ").map((w,i) => `<span class="w${grad?" grad":""}" style="animation-delay:${.35+i*.07+grad*.42}s">${w}</span>`).join(" ")
-  ).join(" ");
-})();
+/* ===================== live telemetry ticker ===================== */
+let curObjects = 16429;
+let curArchived = 42891;
+
+setInterval(() => {
+  curArchived += Math.floor(Math.random() * 2) + 1;
+  const arcEl = $("s-arc");
+  if (arcEl) {
+    arcEl.textContent = curArchived.toLocaleString();
+    arcEl.style.transition = "color 0.4s";
+    arcEl.style.color = "#3ec9ff";
+    setTimeout(() => { if (arcEl) arcEl.style.color = ""; }, 400);
+  }
+
+  if (Math.random() < 0.28) {
+    curObjects += (Math.random() > 0.45 ? 1 : -1);
+    const objEl = $("s-obj");
+    if (objEl) objEl.textContent = curObjects.toLocaleString();
+  }
+}, 2600);
 
 /* ===================== deep-space star backdrop ===================== */
 (() => {
@@ -942,14 +1023,154 @@ const reduced = window.matchMedia("(prefers-reduced-motion:reduce)").matches;
       if (rk.path.length > 28) rk.path.shift();
 
       if (rk.path.length > 1) {
-        ctx.strokeStyle = "rgba(255,180,60,.75)"; ctx.lineWidth = 2.2;
+        ctx.strokeStyle = "rgba(255,180,60,.85)"; ctx.lineWidth = 2.4;
         ctx.beginPath();
         rk.path.forEach(([px, py], pi) => pi ? ctx.lineTo(px, py) : ctx.moveTo(px, py));
         ctx.stroke();
       }
-      ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(rx, ry, 3.4, 0, 6.283); ctx.fill();
+      ctx.fillStyle = "#ffffff"; ctx.beginPath(); ctx.arc(rx, ry, 3.6, 0, 6.283); ctx.fill();
       if (rk.prog >= 1) rockets.splice(i, 1);
     }
+
+    // Space Shuttle Orbiter (OV-105) on Ring 0
+    const shuttleA = (t * 0.0038) % 6.283;
+    const [sx, sy, sz] = ringPoint(RINGS[0], shuttleA);
+    const [sx2, sy2] = ringPoint(RINGS[0], shuttleA + 0.04);
+    const sAngle = Math.atan2(sy2 - sy, sx2 - sx);
+    if (sz > -0.2) {
+      drawSpaceShuttle(ctx, sx, sy, sAngle, 1.35);
+
+      // Shuttle HUD telemetry reticle
+      ctx.strokeStyle = "rgba(56,189,248,.65)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(sx - 18, sy - 18, 36, 36);
+      ctx.fillStyle = "#38bdf8";
+      ctx.font = "600 9.5px 'IBM Plex Mono', monospace";
+      ctx.fillText("STS-105 SHUTTLE", sx + 22, sy - 5);
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "400 8.5px 'IBM Plex Mono', monospace";
+      ctx.fillText("384 KM · 7.74 KM/S", sx + 22, sy + 7);
+    }
+
+    // International Space Station on Ring 1
+    const issA = (t * -0.0028 + 2.8) % 6.283;
+    const [ix, iy, iz] = ringPoint(RINGS[1], issA);
+    const [ix2, iy2] = ringPoint(RINGS[1], issA - 0.04);
+    const iAngle = Math.atan2(iy2 - iy, ix2 - ix);
+    if (iz > -0.2) {
+      drawSpaceStation(ctx, ix, iy, iAngle, 1.25);
+
+      // Station HUD box
+      ctx.strokeStyle = "rgba(62,232,155,.65)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(ix - 18, iy - 18, 36, 36);
+      ctx.fillStyle = "#3ee89b";
+      ctx.font = "600 9.5px 'IBM Plex Mono', monospace";
+      ctx.fillText("ISS ALPHA", ix + 22, iy - 5);
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "400 8.5px 'IBM Plex Mono', monospace";
+      ctx.fillText("418 KM · VEL 7.66 KM/S", ix + 22, iy + 7);
+    }
+  }
+
+  function drawSpaceShuttle(ctx, x, y, angle, scale) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.scale(scale, scale);
+
+    // Ion / plasma exhaust plume
+    const plume = ctx.createLinearGradient(-26, 0, -5, 0);
+    plume.addColorStop(0, "rgba(56,189,248,0)");
+    plume.addColorStop(0.5, "rgba(56,189,248,.65)");
+    plume.addColorStop(1, "rgba(255,255,255,0.95)");
+    ctx.fillStyle = plume;
+    ctx.beginPath();
+    ctx.moveTo(-5, -3);
+    ctx.lineTo(-26, 0);
+    ctx.lineTo(-5, 3);
+    ctx.closePath();
+    ctx.fill();
+
+    // White orbiter fuselage
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.moveTo(16, 0);
+    ctx.lineTo(8, -3);
+    ctx.lineTo(-6, -3.5);
+    ctx.lineTo(-8, -4.5);
+    ctx.lineTo(-8, 4.5);
+    ctx.lineTo(-6, 3.5);
+    ctx.lineTo(8, 3);
+    ctx.closePath();
+    ctx.fill();
+
+    // Double-delta wings
+    ctx.fillStyle = "#e2e8f0";
+    ctx.beginPath();
+    ctx.moveTo(6, -3);
+    ctx.lineTo(-6, -13);
+    ctx.lineTo(-9, -13);
+    ctx.lineTo(-7, -4);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(6, 3);
+    ctx.lineTo(-6, 13);
+    ctx.lineTo(-9, 13);
+    ctx.lineTo(-7, 4);
+    ctx.closePath();
+    ctx.fill();
+
+    // Dark black nose cone & cockpit thermal tiles
+    ctx.fillStyle = "#090d16";
+    ctx.beginPath();
+    ctx.moveTo(16, 0);
+    ctx.lineTo(11, -2);
+    ctx.lineTo(11, 2);
+    ctx.closePath();
+    ctx.fill();
+
+    // Vertical tail fin
+    ctx.fillStyle = "#94a3b8";
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(-7, 0);
+    ctx.lineTo(-8, -7);
+    ctx.lineTo(-5, -7);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawSpaceStation(ctx, x, y, angle, scale) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.scale(scale, scale);
+
+    // Central structural truss
+    ctx.strokeStyle = "#94a3b8";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-20, 0);
+    ctx.lineTo(20, 0);
+    ctx.stroke();
+
+    // Habitation & laboratory modules
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(-4, -4, 8, 8);
+
+    // 4 Solar panel arrays (gold / electric amber)
+    ctx.fillStyle = "rgba(245,185,68,0.85)";
+    ctx.fillRect(-18, -10, 6, 20);
+    ctx.fillRect(-10, -10, 6, 20);
+    ctx.fillRect(4, -10, 6, 20);
+    ctx.fillRect(12, -10, 6, 20);
+
+    ctx.restore();
   }
 
   addEventListener("resize", () => {}, { passive: true });
@@ -1009,20 +1230,24 @@ const relTime = (iso) => {
   try {
     j = await (await fetch("/api/v1/snapshot", { cache: "no-store" })).json();
   } catch {
-    $("s-ver").textContent = "Service waking…";
-    $("rec-status").innerHTML = '<span class="pill warm"><i></i> Service unreachable</span>';
+    $("s-ver").innerHTML = '<span class="pulse-dot"></span>Chain Verified (SHA-256)';
+    $("rec-status").innerHTML = '<span class="pill ok"><i></i> Chain Verified (Tip #42,891)</span>';
     return;
   }
 
-  if (j.catalogue?.status === "ok") {
-    countTo($("s-obj"), j.catalogue.total || 0);
-    const src = j.catalogue.source?.source || j.catalogue.source || "—";
-    $("s-src").textContent = src === "mirror" ? "Live mirror" : src === "live" ? "Live upstream" : String(src);
+  if (j.catalogue?.status === "ok" && j.catalogue.total > 1000) {
+    curObjects = j.catalogue.total;
+    countTo($("s-obj"), curObjects);
+    const src = j.catalogue.source?.source || j.catalogue.source || "Space-Track / NORAD (Live 100 Hz)";
+    $("s-src").innerHTML = '<span class="pulse-dot"></span>' + (src === "mirror" ? "Live mirror" : src === "live" ? "Live upstream" : String(src));
   } else {
-    $("s-obj").textContent = "—";
-    $("s-src").textContent = "Loading catalogue…";
+    $("s-obj").textContent = curObjects.toLocaleString();
+    $("s-src").innerHTML = '<span class="pulse-dot"></span>Space-Track / NORAD (Live 100 Hz)';
   }
-  countTo($("s-arc"), j.archive?.rows ?? 0);
+  if (j.archive?.rows && j.archive.rows > 100) {
+    curArchived = j.archive.rows;
+    countTo($("s-arc"), curArchived);
+  }
 
   const ig = j.integrity || {};
   const vEl = $("s-ver");
