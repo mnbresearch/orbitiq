@@ -164,11 +164,13 @@ test("Regulatory compliance & insurance diligence filing", async () => {
     ledgerHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   });
 
-  check("filing satisfies FCC, ISO 24113 and ESA standards with ledger citation", () => {
+  check("draft is organised by FCC, ISO 24113 and ESA with an archive citation, and never claims compliance", () => {
     assert.ok(filing.filingText.includes("FCC 47 CFR § 25.114"));
     assert.ok(filing.filingText.includes("ISO 24113:2019"));
     assert.ok(filing.filingText.includes("ESA SPACE DEBRIS MITIGATION"));
-    assert.ok(filing.filingText.includes("Sequence #4128"));
+    assert.ok(filing.filingText.includes("sequence #4128"));
+    assert.ok(filing.filingText.includes("does not determine compliance"));
+    assert.ok(!/\bcompliant\b|attested|immutable/i.test(filing.filingText.replace("does not determine compliance", "")));
     assert.ok(filing.frameworks.length === 3);
   });
 

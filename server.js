@@ -87,6 +87,9 @@ const sendPage = file => (req, res) => {
 };
 app.get("/", sendPage("landing.html"));
 app.get(["/app", "/console"], sendPage("index.html"));
+// The public live sky: the whole catalogue on a globe, no account. The console
+// stays behind sign-in; this is the read-only window anyone can open.
+app.get("/sky", sendPage("sky.html"));
 app.use(express.static(PUBLIC_DIR, {
   index: false,
   setHeaders: (res, filePath) => {
@@ -109,6 +112,7 @@ app.get("/robots.txt", (_req, res) => {
     "User-agent: *",
     "Allow: /$",
     "Allow: /landing.html",
+    "Allow: /sky",
     "Allow: /status.html",
     "Allow: /docs.html",
     // The application itself is behind auth and has no public content to index.
@@ -127,6 +131,7 @@ app.get("/sitemap.xml", (_req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const pages = [
     { loc: "/",            pri: "1.0", freq: "weekly"  },
+    { loc: "/sky",         pri: "0.8", freq: "daily"   },
     { loc: "/docs.html",   pri: "0.6", freq: "monthly" },
     { loc: "/status.html", pri: "0.4", freq: "daily"   }
   ];
@@ -538,6 +543,41 @@ api.get("/satellites", async (req, res) => {
     // still ask, but they have to ask.
     const limit = Math.min(parseInt(req.query.limit) || 500, 20000);
     res.json({ count: out.length, satellites: out.slice(0, limit) });
+  } catch (e) { res.status(502).json({ error: "Orbital data source unavailable", detail: e.message }); }
+});
+
+// ---------- compact catalogue: the whole sky in one cacheable response ----------
+//
+// /satellites now defaults to 500 rows, because a bare GET used to serialise
+// the full catalogue with each object's GP block repeated — 10-15 MB of JSON.
+// The console and the public sky view both need EVERY object, though, so they
+// read this instead: one row per object, the fields SGP4 needs plus the few the
+// UI shows, positionally encoded. ~2.5 MB raw, ~0.7 MB compressed.
+//
+// The body is built once per catalogue refresh and reused, so a burst of page
+// loads costs serialisation once. It sits behind the byte-denominated egress
+// budget like the other bulk routes, and is cacheable at the edge for ten
+// minutes — the elements only change when the 6-hourly mirror lands.
+const COMPACT_FIELDS = ["id", "name", "intl", "epoch", "meanMotion", "ecc", "incl", "raan", "argp", "ma",
+  "bstar", "mmDot", "mmDdot", "revNum", "type", "org"];
+let compactCache = { sats: null, body: null, etag: null };
+api.get("/catalog/compact", egressBudget, async (req, res) => {
+  try {
+    const sats = await getSatellites();
+    if (compactCache.sats !== sats) {
+      const rows = sats.map(s => [
+        s.id, s.name, s.intl || "", s.epoch, s.meanMotion, s.ecc, s.incl, s.raan, s.argp, s.ma,
+        s.bstar ?? 0, s.gp?.MEAN_MOTION_DOT ?? 0, s.gp?.MEAN_MOTION_DDOT ?? 0, s.revNum ?? 0,
+        s.noradType || "UNKNOWN", s.org || "other"
+      ]);
+      const src = dataSourceInfo().catalog;
+      const body = JSON.stringify({ count: rows.length, fields: COMPACT_FIELDS, source: src, rows });
+      compactCache = { sats, body, etag: '"c' + crypto.createHash("sha1").update(body).digest("hex").slice(0, 16) + '"' };
+    }
+    res.set("Cache-Control", "public, max-age=600, stale-while-revalidate=3600");
+    res.set("ETag", compactCache.etag);
+    if (req.headers["if-none-match"] === compactCache.etag) return res.status(304).end();
+    res.type("application/json").send(compactCache.body);
   } catch (e) { res.status(502).json({ error: "Orbital data source unavailable", detail: e.message }); }
 });
 

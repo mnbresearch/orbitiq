@@ -39,7 +39,7 @@ function deterministicCopilotAnswer(query, context = {}) {
   }
 
   if (q.includes("fcc") || q.includes("iso") || q.includes("compliance") || q.includes("underwriter") || q.includes("insurance")) {
-    return `[REGULATORY & DILIGENCE ARCHITECTURE]\nOrbitIQ generates cryptographically attested filings supporting:\n1. FCC 47 CFR § 25.114(d)(14) (5-Year Debris Mitigation & Collision Thresholds)\n2. ISO 24113:2019 Clause 6.3 (Active Collision Avoidance Management)\n3. ESA ESSB-ST-U-007 (Mission Tolerable Probability Compliance)\nEvery avoidance decision is chained into our SHA-256 tamper-evident ledger, providing underwriters with independent Proof of Diligence.`;
+    return `[REGULATORY & DILIGENCE ARCHITECTURE]\nOrbitIQ does not determine compliance. It keeps evidence that supports demonstrating parts of:\n1. FCC 47 CFR § 25.114(d)(14) (5-Year Debris Mitigation & Collision Thresholds)\n2. ISO 24113:2019 Clause 6.3 (Active Collision Avoidance Management)\n3. ESA ESSB-ST-U-007 (Mission Tolerable Probability Compliance)\nRecorded decisions are chained into the tamper-evident archive, and a Proof of Diligence report lets an underwriter verify them independently. The FCC lifetime probability figure still needs NASA DAS or a higher-fidelity tool.`;
   }
 
   return `[ORBITIQ TACTICAL SPACE COPILOT]\nTracking ${catalogCount.toLocaleString()} catalogued orbital assets with SGP4 propagation and Foster 2D Probability of Collision.\nActive space environment: NOAA Kp=${kp} (${spaceWeather.condition || "Quiet"}).\nReady to analyze conjunction telemetry, solve minimum-fuel avoidance burns, verify secondary collision clearance, or draft regulatory compliance records.`;

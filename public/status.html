@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OrbitIQ — System Status</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root { --bg:#04060c; --panel:#0b101c; --stroke:rgba(90,130,200,.18); --text:#e6edfa; --dim:#7385a3; --accent:#38bdf8; --mint:#3ecf8e; --amber:#f5b944; --red:#f26d78; }
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:var(--bg); color:var(--text); font-family:Inter,sans-serif; font-size:14px; line-height:1.6; }
+  body { background:var(--bg); color:var(--text); font-family:Geist,system-ui,sans-serif; font-size:14px; line-height:1.6; }
   .wrap { max-width:760px; margin:0 auto; padding:48px 24px 80px; }
   h1 { font-size:24px; font-weight:650; letter-spacing:-.015em; }
   h1 em { color:var(--accent); font-style:normal; }
@@ -26,16 +26,20 @@
   .card .l { font-size:10.5px; color:var(--dim); text-transform:uppercase; letter-spacing:.7px; margin-top:3px; }
   .row { background:var(--panel); border:1px solid var(--stroke); border-radius:12px; padding:14px 18px; margin-top:12px; display:flex; justify-content:space-between; align-items:center; font-size:13px; }
   .row .k { color:var(--dim); }
-  .pill { padding:2px 12px; border-radius:99px; font:600 11px Inter; letter-spacing:.5px; }
+  .pill { padding:2px 12px; border-radius:99px; font:600 11px Geist; letter-spacing:.5px; }
   .pill.live { background:#0f2b1d; color:var(--mint); border:1px solid #1e5c3a; }
   .pill.mirror { background:#10233c; color:var(--accent); border:1px solid #1e3a5c; }
   .pill.cache, .pill.sample, .pill.pending { background:#2b2413; color:var(--amber); border:1px solid #5c4a1e; }
   .pill.off { background:#2b1517; color:var(--red); border:1px solid #5c1e2a; }
   a { color:var(--accent); } .foot { margin-top:30px; font-size:12px; color:var(--dim); }
-  mono, .mono { font-family:"IBM Plex Mono",monospace; font-size:12px; }
+  mono, .mono { font-family:"Geist Mono",monospace; font-size:12px; }
 </style>
 </head>
 <body>
+<nav style="max-width:1100px;margin:0 auto;padding:18px 24px;display:flex;align-items:center;gap:18px;font:500 13.5px Geist,system-ui,sans-serif">
+  <a href="/" style="display:flex;align-items:center;gap:9px;color:#eef2f8;text-decoration:none;font-weight:600;font-size:16px;letter-spacing:-.02em"><svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><circle cx="16" cy="16" r="6.5" fill="#3a7fd0"/><ellipse cx="16" cy="16" rx="13.5" ry="5.2" transform="rotate(-28 16 16)" fill="none" stroke="#7cf0ff" stroke-width="1.5"/><circle cx="27.9" cy="9.7" r="2.2" fill="#fff"/></svg>Orbit<span style="color:#95a0b3">IQ</span></a>
+  <span style="margin-left:auto;display:flex;gap:16px"><a href="/sky" style="color:#95a0b3;text-decoration:none">Live sky</a><a href="/docs.html" style="color:#95a0b3;text-decoration:none">API</a><a href="/status.html" style="color:#95a0b3;text-decoration:none">Status</a><a href="/login.html" style="color:#eef2f8;text-decoration:none">Sign in</a></span>
+</nav>
 <div class="wrap">
   <h1>Orbit<em>IQ</em> status</h1>
   <div class="sub">Live system health, data provenance and archive integrity. Auto-refreshes every 60 s.</div>
@@ -52,7 +56,7 @@
   </div>
 
   <div class="row"><span class="k">Orbital data source</span><span class="pill pending" id="p-source">checking</span></div>
-  <div class="row"><span class="k">Archive backup (survives redeploys)</span><span class="pill off" id="p-backup">checking</span></div>
+  <div class="row" style="flex-wrap:wrap"><span class="k">Archive backup (survives redeploys)</span><span class="pill off" id="p-backup">checking</span><span id="p-backup-why" style="flex-basis:100%;font-size:12.5px;color:var(--dim);margin-top:6px;display:none"></span></div>
   <div class="row"><span class="k">Event types in archive</span><span class="mono" id="p-types">—</span></div>
 
   <div class="foot">
@@ -68,8 +72,18 @@ const fmtUp = s => s >= 86400 ? (s/86400).toFixed(1) + " d" : s >= 3600 ? (s/360
 async function refresh() {
   try {
     const d = await (await fetch("/api/status", { cache: "no-store" })).json();
-    $("dot").className = "dot" + (d.dataSource.source === "sample" ? " warn" : "");
-    $("headline").textContent = d.ok ? "All systems operational" : "Degraded";
+    // "Operational" has to mean the record is safe too: the archive is the
+    // product, and a backup that is not working means the next restart erases it.
+    const bh = d.backup?.health;
+    const backupBad = ["unprotected", "failing", "refusing", "unreadable"].includes(bh);
+    const backupWarn = ["never-run", "stale"].includes(bh);
+    const sample = d.dataSource.source === "sample";
+    $("dot").className = "dot" + (!d.ok || backupBad ? " down" : sample || backupWarn ? " warn" : "");
+    $("headline").textContent = !d.ok ? "Degraded"
+      : backupBad ? "Degraded — the archive is not being backed up"
+      : backupWarn ? "Operational — archive backup not yet confirmed"
+      : sample ? "Operational — running on bundled sample data"
+      : "All systems operational";
     $("headsub").textContent = "checked " + new Date(d.time).toUTCString();
     $("v-catalog").textContent = (d.catalogObjects || 0).toLocaleString();
     $("v-archive").textContent = (d.archive.totalEvents || 0).toLocaleString();
@@ -80,8 +94,15 @@ async function refresh() {
     const src = d.dataSource.source || "pending";
     const ps = $("p-source"); ps.textContent = src.toUpperCase(); ps.className = "pill " + src;
     const pb = $("p-backup");
-    if (d.backup.enabled) { pb.textContent = d.backup.lastBackupAt ? "ON · " + new Date(d.backup.lastBackupAt).toUTCString().slice(17,25) + "Z" : "ON · pending first sweep"; pb.className = "pill live"; }
-    else { pb.textContent = "OFF · set ORBITIQ_GH_TOKEN"; pb.className = "pill off"; }
+    const label = {
+      ok: "OK · last " + (d.backup.lastBackupAt ? new Date(d.backup.lastBackupAt).toUTCString().slice(17, 25) + "Z" : "—"),
+      "never-run": "NO BACKUP YET", stale: "STALE", failing: "FAILING", refusing: "REFUSING",
+      unreadable: "UNREADABLE", unprotected: "OFF · set ORBITIQ_GH_TOKEN"
+    }[bh] || String(bh || "unknown").toUpperCase();
+    pb.textContent = label;
+    pb.className = "pill " + (bh === "ok" ? "live" : backupBad ? "off" : "sample");
+    pb.title = [d.backup.means, d.backup.lastError].filter(Boolean).join(" — ");
+    const why = $("p-backup-why"); why.textContent = bh === "ok" ? "" : pb.title; why.style.display = bh === "ok" ? "none" : "block";
     $("p-types").textContent = Object.entries(d.archive.byType || {}).map(([k,v]) => k + ":" + v).join("  ") || "—";
   } catch (e) {
     $("dot").className = "dot down";

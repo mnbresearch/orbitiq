@@ -6,10 +6,11 @@
 <title>OrbitIQ — Space Traffic Intelligence</title>
 <meta name="description" content="Live satellite tracking, conjunction screening, launch intelligence and space traffic analytics.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;550;600;650&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='7' fill='%230a5aa0'/><circle cx='16' cy='16' r='13' fill='none' stroke='%2338bdf8' stroke-width='1.6'/><circle cx='27' cy='10' r='2.4' fill='%2322d3ee'/></svg>">
-<link rel="stylesheet" href="/css/style.css">
-<link rel="stylesheet" href="/css/intel.css">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='6.5' fill='%2367b6ff'/><ellipse cx='16' cy='16' rx='13.5' ry='5.2' transform='rotate(-28 16 16)' fill='none' stroke='%237cf0ff' stroke-width='1.6'/><circle cx='27.9' cy='9.7' r='2.2' fill='white'/></svg>">
+<link rel="stylesheet" href="/css/style.css?v=17">
+<link rel="stylesheet" href="/css/intel.css?v=17">
 <script type="importmap">
 { "imports": { "three": "/vendor/three/three.module.js", "satellite.js": "/vendor/satellite/index.js" } }
 </script>
@@ -30,7 +31,7 @@
 
 <!-- top chrome -->
 <div class="hud" id="topbar">
-  <div id="logo">Orbit<em>IQ</em></div>
+  <a id="logo" href="/" title="OrbitIQ home"><svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="6.5" fill="#3a7fd0"/><ellipse cx="16" cy="16" rx="13.5" ry="5.2" transform="rotate(-28 16 16)" fill="none" stroke="#7cf0ff" stroke-width="1.5"/><circle cx="27.9" cy="9.7" r="2.2" fill="#fff"/></svg>Orbit<em>IQ</em></a>
   <div class="live-chip"><span class="live-dot"></span><span id="livecount">Acquiring catalog…</span></div>
   <div style="flex:1"></div>
   <nav class="tabs">
@@ -45,16 +46,22 @@
   </nav>
   <div style="flex:1"></div>
   <div class="kp-chip" id="kp-chip" title="Geomagnetic activity — planetary K index"><span class="kp-dot"></span><span>Kp <b id="kp-val">—</b></span></div>
-  <button id="plans-btn" style="width:auto;padding:6px 11px" title="Subscription plans">Plans</button>
   <button id="palette-btn" style="width:auto;padding:6px 11px" title="Command palette (Ctrl+K)">⌘K</button>
-  <a href="/admin.html" id="admin-deck-btn" style="text-decoration:none"><button style="width:auto;padding:6px 11px;background:rgba(239,68,68,.14);border:1px solid rgba(239,68,68,.38);color:#fca5a5" title="Admin Space Command Operations Deck">⚡ Admin Deck</button></a>
   <!-- Evidence sits in the main nav, not under a menu. The decision log only
        has value if it gets filled in, and a page nobody can find is a page
        nobody uses — which would leave the archive full of warnings and empty
        of responses, i.e. back to being a feed. -->
-  <a href="/evidence.html" style="text-decoration:none"><button style="width:auto;padding:6px 11px" title="Warnings, recorded decisions and Proof of Diligence">Evidence</button></a>
-  <a href="/docs.html" target="_blank" style="text-decoration:none"><button style="width:auto;padding:6px 11px" title="API documentation">API</button></a>
-  <a href="/status.html" target="_blank" style="text-decoration:none"><button style="width:auto;padding:6px 11px" title="System status & data provenance">Status</button></a>
+  <a href="/evidence.html" style="text-decoration:none;flex:none"><button style="width:auto;padding:6px 11px" title="Warnings, recorded decisions and Proof of Diligence">Evidence</button></a>
+  <details class="more" id="more-menu">
+    <summary title="More">More</summary>
+    <div class="more-menu">
+      <button id="plans-btn" type="button">Plans &amp; limits</button>
+      <a href="/sky" target="_blank">Public live sky</a>
+      <a href="/docs.html" target="_blank">API reference</a>
+      <a href="/status.html" target="_blank">System status</a>
+      <a href="/verify.html" target="_blank">Verifier console</a>
+    </div>
+  </details>
   <select id="speed" style="width:118px">
     <option value="1">1× real-time</option>
     <option value="60">60×</option>
@@ -422,24 +429,27 @@
 // workspace key is in place when the app boots.
 (function () {
   const token = localStorage.getItem("orbitiq-session");
+  // Account actions live in the More menu, so the top bar never overflows on a laptop screen.
   function inject(html) {
-    const bar = document.getElementById("topbar"), clock = document.getElementById("clock");
-    if (!bar || !clock) return;
-    const span = document.createElement("span");
-    span.style.cssText = "display:flex;gap:6px;align-items:center";
-    span.innerHTML = html;
-    bar.insertBefore(span, clock);
+    const menu = document.querySelector("#more-menu .more-menu");
+    if (!menu) return;
+    const wrap = document.createElement("div");
+    wrap.innerHTML = '<div class="sep"></div>' + html;
+    while (wrap.firstChild) menu.appendChild(wrap.firstChild);
   }
   // v10: the console is not a public page — unauthenticated visitors go to the landing page.
   if (!token) {
     document.documentElement.innerHTML =
-      '<body style="margin:0;background:#04060c;color:#e9eefb;font:15px/1.6 Inter,sans-serif;height:100vh;display:grid;place-items:center;text-align:center">' +
-      '<div><div style="font-size:21px;font-weight:650;letter-spacing:-.02em">Orbit<span style="color:#38bdf8">IQ</span></div>' +
-      '<div style="margin-top:10px;color:#8395b3;font-size:13.5px">This console is available to approved operators.</div>' +
-      '<div style="margin-top:22px;display:flex;gap:10px;justify-content:center">' +
-      '<a href="/login.html" style="padding:10px 20px;border-radius:9px;background:#38bdf8;color:#04121f;font-weight:600;font-size:13.5px;text-decoration:none">Sign in</a>' +
-      '<a href="/#request" style="padding:10px 20px;border-radius:9px;border:1px solid rgba(90,130,200,.3);color:#e9eefb;font-weight:600;font-size:13.5px;text-decoration:none">Request access</a>' +
-      '</div></div></body>';
+      '<head><meta name="viewport" content="width=device-width,initial-scale=1"><title>OrbitIQ console — sign in</title>' +
+      '<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap" rel="stylesheet"></head>' +
+      '<body style="margin:0;background:radial-gradient(900px 600px at 50% 30%,rgba(40,110,220,.18),transparent 60%),#04060a;color:#eef2f8;font:15px/1.6 Geist,system-ui,sans-serif;min-height:100vh;display:grid;place-items:center;text-align:center;padding:24px">' +
+      '<div style="max-width:420px"><svg viewBox="0 0 32 32" width="40" height="40" aria-hidden="true"><circle cx="16" cy="16" r="6.5" fill="#3a7fd0"/><ellipse cx="16" cy="16" rx="13.5" ry="5.2" transform="rotate(-28 16 16)" fill="none" stroke="#7cf0ff" stroke-width="1.5"/><circle cx="27.9" cy="9.7" r="2.2" fill="#fff"/></svg>' +
+      '<h1 style="margin:14px 0 0;font-size:26px;font-weight:600;letter-spacing:-.03em">The OrbitIQ console</h1>' +
+      '<p style="margin:10px 0 0;color:#95a0b3">Fleet screening, decisions and evidence live here, behind sign-in. The public live sky is open to everyone.</p>' +
+      '<div style="margin-top:26px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">' +
+      '<a href="/login.html" style="padding:12px 22px;border-radius:10px;background:#f4f7fb;color:#05070b;font-weight:500;text-decoration:none">Sign in</a>' +
+      '<a href="/sky" style="padding:12px 22px;border-radius:10px;border:1px solid rgba(255,255,255,.16);color:#eef2f8;font-weight:500;text-decoration:none">Explore the live sky</a>' +
+      '</div><p style="margin-top:22px;font-size:13.5px;color:#5f6a7d">No account? <a href="/#request" style="color:#95a0b3">Request access</a></p></div></body>';
     return;
   }
   fetch("/api/auth/me", { headers: { Authorization: "Bearer " + token } })
@@ -449,9 +459,9 @@
         localStorage.setItem("orbitiq-apikey", d.workspace.apiKey);
         if (!sessionStorage.getItem("oiq-rewired")) { sessionStorage.setItem("oiq-rewired", "1"); location.reload(); return; }
       }
-      const adminBtn = d.user.role === "admin"
-        ? '<a href="/admin.html" style="text-decoration:none"><button style="width:auto;padding:6px 12px;border-color:#e879f966;color:#e879f9">Admin</button></a>' : "";
-      inject(adminBtn + '<button id="oiq-signout" style="width:auto;padding:6px 12px" title="Signed in as ' + d.user.email + '">Sign out</button>');
+      const esc = v => String(v || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      const adminBtn = d.user.role === "admin" ? '<a href="/admin.html">Admin console</a>' : "";
+      inject('<div style="padding:6px 10px;font-size:11.5px;color:var(--text-3)">' + esc(d.user.email) + '</div>' + adminBtn + '<button id="oiq-signout" type="button">Sign out</button>');
       const so = document.getElementById("oiq-signout");
       if (so) so.addEventListener("click", async () => {
         try { await fetch("/api/auth/logout", { method: "POST", headers: { Authorization: "Bearer " + token } }); } catch {}
@@ -462,11 +472,15 @@
     })
     .catch(() => {
       localStorage.removeItem("orbitiq-session");
-      inject('<a href="/login.html" style="text-decoration:none"><button style="width:auto;padding:6px 12px">Sign in</button></a>');
+      inject('<a href="/login.html">Sign in</a>');
     });
 })();
 </script>
-<script type="module" src="/js/app.js"></script>
+<script type="module" src="/js/app.js?v=17"></script>
+<script>
+// close the More menu when clicking elsewhere
+document.addEventListener("click", e => { const m = document.getElementById("more-menu"); if (m && m.open && !m.contains(e.target)) m.open = false; });
+</script>
 <script type="module">
   // v14 operations console. Mounted lazily the first time the Fleet tab is
   // opened, so it never costs anything for users who don't have a fleet.

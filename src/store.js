@@ -97,7 +97,7 @@ export function deleteWorkspace(id) {
 export function adminOverview() {
   const day = new Date().toISOString().slice(0, 10);
   return Object.values(db.workspaces).map(w => ({
-    id: w.id, name: w.name, org: w.org, role: w.role || "member",
+    id: w.id, name: w.name, org: w.org, role: w.role || "member", plan: w.plan || "free",
     createdAt: w.createdAt, webhook: !!w.webhook,
     screening: w.screening,
     alertCount: (db.alerts[w.id] || []).length,

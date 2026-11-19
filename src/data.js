@@ -34,10 +34,16 @@ export function dataSourceInfo() {
 
 // Groups we ingest. "active" alone is ~11k objects; we merge several curated
 // groups so the platform covers constellations, stations, debris and more.
+// The four large debris clouds CelesTrak publishes as their own groups. Debris
+// is what an operator is actually screening against, so a catalogue of active
+// payloads plus two clouds understated the threat environment; the other two
+// (Fengyun-1C and Cosmos 2251) are the largest catalogued fragmentation events.
 export const GROUPS = [
   "active",          // all active satellites
   "cosmos-1408-debris",
-  "iridium-33-debris"
+  "iridium-33-debris",
+  "fengyun-1c-debris",
+  "cosmos-2251-debris"
 ];
 
 const SAT_TTL_MS = 6 * 60 * 60 * 1000;      // re-fetch orbital data every 6h

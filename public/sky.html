@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Live sky — every tracked object in orbit, right now · OrbitIQ</title>
+<meta name="description" content="Every object in the public orbital catalogue, propagated live with SGP4 in your browser. Search any satellite or NORAD ID, filter payloads, rocket bodies and debris, and see where it is now.">
+<link rel="canonical" href="https://orbit.mnbresearch.com/sky">
+<meta property="og:title" content="OrbitIQ live sky">
+<meta property="og:description" content="Every tracked object in orbit, propagated live in your browser.">
+<meta property="og:url" content="https://orbit.mnbresearch.com/sky">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#04060a">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='6.5' fill='%2367b6ff'/><ellipse cx='16' cy='16' rx='13.5' ry='5.2' transform='rotate(-28 16 16)' fill='none' stroke='%237cf0ff' stroke-width='1.6'/><circle cx='27.9' cy='9.7' r='2.2' fill='white'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/css/brand.css?v=17">
+<style>
+  html, body { height: 100%; overflow: hidden; }
+  #globe { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; cursor: grab; }
+  #globe:active { cursor: grabbing; }
+  .ui { position: fixed; z-index: 5; }
+  .top { top: 0; left: 0; right: 0; height: 64px; display: flex; align-items: center; gap: 16px; padding: 0 20px;
+    background: linear-gradient(180deg, rgba(4,6,10,.85), rgba(4,6,10,0)); pointer-events: none; }
+  .top > * { pointer-events: auto; }
+  .top .title { font: 500 12px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); display: flex; align-items: center; gap: 9px; padding-left: 16px; border-left: 1px solid var(--line-2); }
+  .top .right { margin-left: auto; display: flex; gap: 8px; }
+  .panel { background: rgba(7, 10, 17, .78); border: 1px solid var(--line); border-radius: 14px; backdrop-filter: blur(16px) saturate(140%); -webkit-backdrop-filter: blur(16px) saturate(140%); }
+  #left { top: 78px; left: 20px; width: 300px; padding: 16px; max-height: calc(100vh - 180px); overflow: auto; }
+  .search { position: relative; display: block; }
+  .search input { width: 100%; height: 42px; border-radius: 10px; border: 1px solid var(--line-2); background: rgba(255,255,255,.03); color: var(--text); padding: 0 12px 0 36px; font: 400 14px var(--font); }
+  .search input::placeholder { color: var(--faint); }
+  .search svg { position: absolute; left: 12px; top: 13px; width: 16px; height: 16px; color: var(--faint); }
+  #results { margin-top: 6px; }
+  #results button { display: flex; width: 100%; justify-content: space-between; gap: 10px; background: none; border: 0; color: var(--text); text-align: left; padding: 8px 10px; border-radius: 8px; cursor: pointer; font: 400 13.5px var(--font); }
+  #results button:hover, #results button:focus-visible { background: var(--panel-2); }
+  #results button span:last-child { color: var(--faint); font: 400 12px var(--mono); }
+  .group { margin-top: 16px; }
+  .group h3 { margin: 0 0 8px; font: 500 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
+  .toggles { display: grid; gap: 4px; }
+  .tog { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid transparent; background: none; color: var(--text); cursor: pointer; font: 400 13.5px var(--font); text-align: left; }
+  .tog:hover { background: var(--panel-2); }
+  .tog[aria-pressed="false"] { color: var(--faint); }
+  .tog[aria-pressed="false"] .swatch { opacity: .25; }
+  .tog .ct { margin-left: auto; font: 400 12px var(--mono); color: var(--dim); }
+  .seg { display: flex; gap: 4px; background: rgba(255,255,255,.03); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+  .seg button { flex: 1; height: 30px; border: 0; border-radius: 7px; background: none; color: var(--dim); font: 500 12.5px var(--font); cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: rgba(255,255,255,.1); color: var(--text); }
+  .note { margin-top: 16px; font-size: 12px; line-height: 1.55; color: var(--faint); }
+  .note a { color: var(--dim); }
+  #card { top: 78px; right: 20px; width: 320px; padding: 18px; display: none; }
+  #card.on { display: block; animation: rise .25s ease; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  #card .kind { display: flex; align-items: center; gap: 8px; font: 500 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--dim); }
+  #card h2 { margin: 10px 0 2px; font: 600 22px/1.2 var(--font); letter-spacing: -.02em; word-break: break-word; }
+  #card .ids { font: 400 12.5px var(--mono); color: var(--faint); }
+  #card dl { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; margin: 18px 0 0; }
+  #card dt { font: 500 10.5px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
+  #card dd { margin: 6px 0 0; font: 500 15px/1.2 var(--mono); }
+  #card .close { position: absolute; top: 12px; right: 12px; width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: none; color: var(--dim); cursor: pointer; }
+  #card .cta { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--dim); }
+  #card .cta .btn { margin-top: 10px; width: 100%; }
+  #bottom { left: 50%; bottom: 18px; transform: translateX(-50%); display: flex; align-items: center; gap: 14px; padding: 8px 10px 8px 16px; }
+  #clock { font: 500 13px var(--mono); color: var(--text); white-space: nowrap; }
+  #clock span { color: var(--faint); }
+  #bottom .seg { min-width: 250px; }
+  #tip { position: fixed; z-index: 8; pointer-events: none; display: none; padding: 8px 11px; border-radius: 9px; background: rgba(7,10,17,.92); border: 1px solid var(--line-2); font-size: 13px; white-space: nowrap; }
+  #tip small { display: block; color: var(--faint); font: 400 11.5px var(--mono); margin-top: 2px; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; z-index: 20; background: var(--bg); transition: opacity .6s; }
+  #loading.done { opacity: 0; pointer-events: none; }
+  #loading .in { text-align: center; color: var(--dim); font-size: 14px; }
+  #loading .bar { width: 220px; height: 2px; margin: 16px auto 0; background: var(--line); overflow: hidden; border-radius: 2px; }
+  #loading .bar i { display: block; width: 40%; height: 100%; background: var(--accent); animation: slide 1.1s infinite ease-in-out; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(260%); } }
+  .zoom { position: fixed; right: 20px; bottom: 18px; z-index: 5; display: flex; flex-direction: column; gap: 6px; }
+  .zoom button { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: rgba(7,10,17,.78); color: var(--text); font-size: 18px; cursor: pointer; backdrop-filter: blur(10px); }
+  #mfilters { display: none; }
+  .show-sm { display: none; }
+  @media (max-width: 860px) {
+    .top .title { display: none; }
+    #left { top: auto; bottom: 74px; left: 12px; right: 12px; width: auto; max-height: 46vh; display: none; }
+    #left.open { display: block; }
+    #mfilters { display: inline-flex; }
+    #card { top: auto; bottom: 74px; left: 12px; right: 12px; width: auto; }
+    #bottom { left: 12px; right: 12px; transform: none; bottom: 12px; gap: 8px; padding: 6px; }
+    #bottom .seg { min-width: 0; flex: 1; }
+    #clock { display: none; }
+    .zoom { display: none; }
+    .top .right .hide-sm { display: none; }
+    .top .right .show-sm { display: inline; }
+    .top { padding: 0 12px; gap: 10px; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#q">Skip to search</a>
+<canvas id="globe" aria-label="Interactive globe of every tracked object in orbit"></canvas>
+
+<header class="ui top">
+  <a class="brand" href="/" aria-label="OrbitIQ home">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><defs><radialGradient id="bg1" cx=".35" cy=".35" r=".8"><stop offset="0" stop-color="#9fd3ff"/><stop offset="1" stop-color="#1d4f9c"/></radialGradient></defs><circle cx="16" cy="16" r="6.5" fill="url(#bg1)"/><ellipse cx="16" cy="16" rx="13.5" ry="5.2" transform="rotate(-28 16 16)" fill="none" stroke="#7cf0ff" stroke-width="1.5"/><circle cx="27.9" cy="9.7" r="2.2" fill="#fff"/></svg>
+    Orbit<b>IQ</b>
+  </a>
+  <div class="title"><span class="live-dot"></span>Live sky</div>
+  <div class="right">
+    <button class="btn sm" id="mfilters" aria-controls="left" aria-expanded="false">Search</button>
+    <a class="btn sm hide-sm" href="/login.html">Sign in</a>
+    <a class="btn sm primary" href="/#request"><span class="hide-sm">Request access</span><span class="show-sm">Get access</span></a>
+  </div>
+</header>
+
+<aside class="ui panel" id="left" aria-label="Search and filters">
+  <label class="search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+    <input id="q" type="search" placeholder="Satellite name or NORAD ID" autocomplete="off" aria-label="Search satellites">
+  </label>
+  <div id="results" role="listbox" aria-label="Search results"></div>
+
+  <div class="group">
+    <h3>Object type</h3>
+    <div class="toggles" id="types"></div>
+  </div>
+  <div class="group">
+    <h3>Orbit regime</h3>
+    <div class="toggles" id="regimes"></div>
+  </div>
+  <p class="note">Positions are propagated in your browser with SGP4 from public general-perturbation elements (<a href="https://celestrak.org" target="_blank" rel="noopener">CelesTrak</a>), refreshed every six hours. Accuracy is roughly kilometre-level: good for awareness, not for operational collision avoidance. <a href="/">What OrbitIQ does with it →</a></p>
+</aside>
+
+<section class="ui panel" id="card" aria-live="polite">
+  <button class="close" id="card-x" aria-label="Close">✕</button>
+  <div class="kind" id="c-kind"></div>
+  <h2 id="c-name"></h2>
+  <div class="ids" id="c-ids"></div>
+  <dl>
+    <div><dt>Altitude</dt><dd id="c-alt">—</dd></div>
+    <div><dt>Speed</dt><dd id="c-spd">—</dd></div>
+    <div><dt>Inclination</dt><dd id="c-inc">—</dd></div>
+    <div><dt>Period</dt><dd id="c-per">—</dd></div>
+    <div><dt>Sub-point</dt><dd id="c-ll">—</dd></div>
+    <div><dt>Elements age</dt><dd id="c-age">—</dd></div>
+  </dl>
+  <div class="cta">Operate this spacecraft? OrbitIQ screens it against the catalogue continuously and keeps a verifiable record of every warning and decision.
+    <a class="btn sm primary" href="/#request">Screen your fleet <span class="arr">→</span></a>
+  </div>
+</section>
+
+<div class="ui panel" id="bottom">
+  <div id="clock" aria-live="off">—</div>
+  <div class="seg" role="group" aria-label="Time speed" id="speed">
+    <button data-s="1" aria-pressed="true">Live</button>
+    <button data-s="60" aria-pressed="false">60×</button>
+    <button data-s="600" aria-pressed="false">600×</button>
+  </div>
+</div>
+<div class="zoom"><button id="zin" aria-label="Zoom in">+</button><button id="zout" aria-label="Zoom out">−</button></div>
+<div id="tip" role="tooltip"></div>
+<div id="loading"><div class="in"><div id="ld-msg">Loading the catalogue…</div><div class="bar"><i></i></div></div></div>
+
+<script type="module">
+import { createSkyGlobe, TYPE_STYLE } from "/js/skyglobe.js?v=17";
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmt = n => Number(n).toLocaleString("en-US");
+let orgNames = {};
+fetch("/api/v1/organizations").then(r => r.json()).then(d => { orgNames = Object.fromEntries(d.organizations.map(o => [o.id, o.name])); }).catch(() => {});
+
+const types = new Set(Object.keys(TYPE_STYLE));
+const regimes = new Set(["LEO", "MEO", "GEO"]);
+let sky;
+const apply = () => sky && sky.setFilter(o => types.has(o.type) && regimes.has(o.regime));
+
+function ageOf(epoch) {
+  const d = (Date.now() - new Date(epoch.endsWith("Z") ? epoch : epoch + "Z").getTime()) / 86400000;
+  if (!Number.isFinite(d)) return "—";
+  return d < 1 ? Math.round(d * 24) + " h" : d.toFixed(1) + " d";
+}
+async function show(o) {
+  if (!o) { $("card").classList.remove("on"); return; }
+  const st = TYPE_STYLE[o.type];
+  $("c-kind").innerHTML = `<span class="swatch" style="background:#${st.color.toString(16).padStart(6, "0")}"></span>${esc(st.label.replace(/s$/, ""))} · ${o.regime}`;
+  $("c-name").textContent = o.name;
+  $("c-ids").textContent = `NORAD ${o.id} · ${o.intl || "—"}${orgNames[o.org] && o.org !== "other" ? " · " + orgNames[o.org] : ""}`;
+  $("c-inc").textContent = o.incl.toFixed(2) + "°";
+  $("c-per").textContent = (1440 / o.meanMotion).toFixed(1) + " min";
+  $("c-age").textContent = ageOf(o.epoch);
+  const s = o.state;
+  $("c-alt").textContent = s ? fmt(Math.round(s.altKm)) + " km" : "—";
+  $("c-spd").textContent = s ? s.speedKmS.toFixed(2) + " km/s" : "—";
+  $("c-ll").textContent = s ? `${s.lat.toFixed(1)}°, ${s.lon.toFixed(1)}°` : "—";
+  $("card").classList.add("on");
+}
+
+let liveTimer;
+try {
+  sky = await createSkyGlobe($("globe"), {
+    timeScale: 1, autoRotate: 0.03, distance: 26, wheelZoom: true, pointScale: 1.05, tilt: 0.3,
+    onHover(o, x, y) {
+      const t = $("tip");
+      if (!o) { t.style.display = "none"; $("globe").style.cursor = ""; return; }
+      t.innerHTML = `${esc(o.name)}<small>NORAD ${o.id} · ${esc(TYPE_STYLE[o.type].label.replace(/s$/, ""))} · ${o.regime}</small>`;
+      t.style.display = "block"; t.style.left = (x + 14) + "px"; t.style.top = (y + 14) + "px";
+      $("globe").style.cursor = "pointer";
+    },
+    onSelect(o) {
+      show(o);
+      clearInterval(liveTimer);
+      if (o) liveTimer = setInterval(async () => show({ ...o, state: await sky.stateOf(o.index) }), 1000);
+    },
+    onTick(d) {
+      $("clock").innerHTML = d.toISOString().slice(0, 10) + " " + d.toISOString().slice(11, 19) + " <span>UTC</span>";
+    },
+    onReady() { $("loading").classList.add("done"); }
+  });
+} catch (e) {
+  $("ld-msg").innerHTML = "The live sky could not start: " + esc(e.message) + ".<br>It needs WebGL and a moment of network. <a href='/' style='color:var(--accent)'>Back to OrbitIQ</a>";
+  document.querySelector("#loading .bar").remove();
+  throw e;
+}
+
+// filters
+function renderToggles() {
+  const s = sky.stats;
+  $("types").innerHTML = Object.entries(TYPE_STYLE).filter(([k]) => s.byType[k]).map(([k, v]) =>
+    `<button class="tog" data-k="${k}" aria-pressed="${types.has(k)}"><span class="swatch" style="background:#${v.color.toString(16).padStart(6, "0")}"></span>${v.label}<span class="ct">${fmt(s.byType[k])}</span></button>`).join("");
+  $("regimes").innerHTML = ["LEO", "MEO", "GEO"].map(k =>
+    `<button class="tog" data-r="${k}" aria-pressed="${regimes.has(k)}"><span class="swatch" style="background:var(--dim)"></span>${{ LEO: "Low Earth orbit", MEO: "Medium Earth orbit", GEO: "Geosynchronous & high" }[k]}<span class="ct">${fmt(s.byRegime[k])}</span></button>`).join("");
+}
+renderToggles();
+$("left").addEventListener("click", e => {
+  const b = e.target.closest(".tog"); if (!b) return;
+  const set = b.dataset.k ? types : regimes, key = b.dataset.k || b.dataset.r;
+  set.has(key) ? set.delete(key) : set.add(key);
+  b.setAttribute("aria-pressed", set.has(key)); apply();
+});
+
+// search
+const idx = sky.objects.map((o, i) => ({ n: o.name.toUpperCase(), id: String(o.id), i }));
+$("q").addEventListener("input", () => {
+  const q = $("q").value.trim().toUpperCase();
+  if (!q) { $("results").innerHTML = ""; return; }
+  const hits = idx.filter(x => x.id === q || x.n.includes(q)).slice(0, 8);
+  $("results").innerHTML = hits.length ? hits.map(h => {
+    const o = sky.objects[h.i];
+    return `<button role="option" data-i="${h.i}"><span>${esc(o.name)}</span><span>${o.id}</span></button>`;
+  }).join("") : `<div class="note" style="margin:8px 4px">No object matches “${esc($("q").value)}”.</div>`;
+});
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") $("results").querySelector("button")?.click(); });
+$("results").addEventListener("click", e => {
+  const b = e.target.closest("button[data-i]"); if (!b) return;
+  const i = +b.dataset.i; sky.select(i); sky.flyTo(i, 15);
+  if (matchMedia("(max-width: 860px)").matches) { $("left").classList.remove("open"); $("mfilters").setAttribute("aria-expanded", "false"); }
+});
+$("card-x").onclick = () => sky.select(-1);
+$("mfilters").onclick = () => { const o = $("left").classList.toggle("open"); $("mfilters").setAttribute("aria-expanded", o); };
+
+// time + zoom
+$("speed").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  const s = +b.dataset.s;
+  $("speed").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  if (s === 1) sky.resetTime();
+  sky.setTimeScale(s);
+});
+$("zin").onclick = () => sky.zoom(0.8); $("zout").onclick = () => sky.zoom(1.25);
+
+// deep link: /sky?norad=25544
+const want = new URLSearchParams(location.search).get("norad");
+if (want) { const i = sky.objects.findIndex(o => String(o.id) === want); if (i >= 0) setTimeout(() => { sky.select(i); sky.flyTo(i, 15); }, 600); }
+</script>
+</body>
+</html>

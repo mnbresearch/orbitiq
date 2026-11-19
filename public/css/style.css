@@ -13,15 +13,15 @@
   --text-1: #f4f6fa;
   --text-2: #9aa4b5;
   --text-3: #5c6675;
-  --accent: #5aa7ff;
-  --accent-strong: #79b8ff;
-  --accent-dim: rgba(90, 167, 255, 0.12);
+  --accent: #7cf0ff;
+  --accent-strong: #b0f7ff;
+  --accent-dim: rgba(124, 240, 255, 0.12);
   --green: #3ecf8e;
   --amber: #f5b944;
   --red: #f26d78;
   --violet: #a78bfa;
-  --sans: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: "Geist", "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --mono: "Geist Mono", "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --r-sm: 8px; --r-md: 10px; --r-lg: 14px;
   --shadow-1: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
   --e-out: cubic-bezier(0.25, 0.1, 0.25, 1);
@@ -88,11 +88,13 @@ body {
 /* ---------- top bar ---------- */
 .hud { position: fixed; z-index: 10; }
 #topbar {
-  top: 0; left: 0; right: 0; height: 54px; display: flex; align-items: center; gap: 12px;
-  padding: 0 16px;
+  top: 0; left: 0; right: 0; height: 56px; display: flex; align-items: center; gap: 10px;
+  padding: 0 16px; white-space: nowrap;
   background: linear-gradient(180deg, rgba(5, 6, 10, 0.9) 40%, rgba(5, 6, 10, 0));
 }
-#logo { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+#logo { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--text-1); }
+#logo svg { width: 22px; height: 22px; }
+#logo em { color: var(--text-2) !important; }
 #logo em { font-style: normal; color: var(--accent); }
 .live-chip {
   display: flex; align-items: center; gap: 7px; padding: 5px 11px; border-radius: 999px;
@@ -110,7 +112,8 @@ body {
   border-radius: var(--r-md); padding: 3px; gap: 1px;
 }
 .tab {
-  padding: 6px 13px; border-radius: 7px; cursor: pointer; color: var(--text-2);
+  white-space: nowrap;
+  padding: 6px 12px; border-radius: 7px; cursor: pointer; color: var(--text-2);
   font-size: 12.5px; font-weight: 500; border: none; background: transparent;
   font-family: var(--sans); letter-spacing: -0.006em;
   transition: color var(--t-fast) var(--e-out), background var(--t-fast) var(--e-out);
@@ -153,7 +156,7 @@ select, input, button, textarea {
               box-shadow var(--t-fast) var(--e-out), transform var(--t-fast) var(--e-out);
 }
 select:hover, input:hover { border-color: var(--border-strong); }
-select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(90, 167, 255, 0.15); }
+select:focus, input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124, 240, 255, 0.15); }
 input::placeholder { color: var(--text-3); }
 button { cursor: pointer; font-weight: 500; color: var(--text-2); }
 button:hover { border-color: var(--border-strong); background: rgba(255, 255, 255, 0.055); color: var(--text-1); }
@@ -397,3 +400,16 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
 .tf-cell .v { font-size: 16px; color: var(--text-1); font-weight: 600; }
 .tf-cell .l { font-size: 11px; color: var(--text-3); margin-top: 2px; font-family: var(--sans); }
 .lp-row-bad { opacity: 0.4; }
+
+/* ---------- top bar: secondary links collapse into a menu ---------- */
+#topbar > button, #topbar > a > button, #topbar select { flex: none; }
+.more { position: relative; flex: none; }
+.more > summary { list-style: none; cursor: pointer; padding: 6px 11px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--raised); color: var(--text-2); font-size: 12.5px; font-weight: 500; }
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary:hover, .more[open] > summary { color: var(--text-1); border-color: var(--border-strong); }
+.more-menu { position: absolute; right: 0; top: calc(100% + 6px); min-width: 210px; padding: 6px; border-radius: var(--r-md); background: rgba(10, 12, 18, 0.97); border: 1px solid var(--border-strong); box-shadow: var(--shadow-1); display: grid; gap: 2px; z-index: 30; }
+.more-menu a, .more-menu button { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 7px; border: 0; background: none; color: var(--text-2); font-size: 12.5px; text-decoration: none; }
+.more-menu a:hover, .more-menu button:hover { background: rgba(255,255,255,.06); color: var(--text-1); }
+.more-menu .sep { height: 1px; background: var(--border); margin: 4px 2px; }
+@media (max-width: 1360px) { #clock { display: none; } }
+@media (max-width: 1180px) { .live-chip { display: none !important; } }

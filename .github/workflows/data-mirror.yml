@@ -25,7 +25,7 @@ jobs:
         run: |
           mkdir -p out/data/live
           ok=0
-          for g in active cosmos-1408-debris iridium-33-debris; do
+          for g in active cosmos-1408-debris iridium-33-debris fengyun-1c-debris cosmos-2251-debris; do
             if curl -sfL --retry 3 --retry-delay 10 --max-time 180 \
                  -A "OrbitIQ-mirror/1.0 (github.com/${{ github.repository }})" \
                  "https://celestrak.org/NORAD/elements/gp.php?GROUP=$g&FORMAT=json" \

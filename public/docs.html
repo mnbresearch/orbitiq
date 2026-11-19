@@ -3,16 +3,16 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OrbitIQ API — Documentation</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root { --bg:#04060c; --panel:#0b101c; --stroke:rgba(90,130,200,.18); --text:#e6edfa; --dim:#7385a3; --accent:#38bdf8; --mint:#34d399; }
   * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:var(--bg); color:var(--text); font-family:"Inter",sans-serif; font-size:13.5px; line-height:1.65; }
+  body { background:var(--bg); color:var(--text); font-family:"Geist",system-ui,sans-serif; font-size:13.5px; line-height:1.65; }
   .wrap { max-width:880px; margin:0 auto; padding:48px 24px 80px; }
-  h1 { font-family:"Inter",sans-serif; font-size:26px; letter-spacing:-0.015em; font-weight:650; }
+  h1 { font-family:"Geist",system-ui,sans-serif; font-size:26px; letter-spacing:-0.015em; font-weight:650; }
   h1 em { color:var(--accent); font-style:normal; }
   .sub { color:var(--dim); margin:6px 0 34px; }
-  h2 { font-family:"Inter",sans-serif; font-size:13.5px; letter-spacing:-0.005em; color:var(--text); margin:38px 0 12px; font-weight:600; }
+  h2 { font-family:"Geist",system-ui,sans-serif; font-size:13.5px; letter-spacing:-0.005em; color:var(--text); margin:38px 0 12px; font-weight:600; }
   .ep { background:var(--panel); border:1px solid var(--stroke); border-radius:12px; padding:14px 18px; margin-bottom:10px; }
   .m { display:inline-block; width:52px; font-weight:600; }
   .m.get { color:var(--mint); } .m.post { color:var(--accent); } .m.put { color:#fbbf24; } .m.del { color:#f87171; }
@@ -26,6 +26,10 @@
 </style>
 </head>
 <body>
+<nav style="max-width:1100px;margin:0 auto;padding:18px 24px;display:flex;align-items:center;gap:18px;font:500 13.5px Geist,system-ui,sans-serif">
+  <a href="/" style="display:flex;align-items:center;gap:9px;color:#eef2f8;text-decoration:none;font-weight:600;font-size:16px;letter-spacing:-.02em"><svg viewBox="0 0 32 32" width="22" height="22" aria-hidden="true"><circle cx="16" cy="16" r="6.5" fill="#3a7fd0"/><ellipse cx="16" cy="16" rx="13.5" ry="5.2" transform="rotate(-28 16 16)" fill="none" stroke="#7cf0ff" stroke-width="1.5"/><circle cx="27.9" cy="9.7" r="2.2" fill="#fff"/></svg>Orbit<span style="color:#95a0b3">IQ</span></a>
+  <span style="margin-left:auto;display:flex;gap:16px"><a href="/sky" style="color:#95a0b3;text-decoration:none">Live sky</a><a href="/docs.html" style="color:#95a0b3;text-decoration:none">API</a><a href="/status.html" style="color:#95a0b3;text-decoration:none">Status</a><a href="/login.html" style="color:#eef2f8;text-decoration:none">Sign in</a></span>
+</nav>
 <div class="wrap">
   <h1>Orbit<em>IQ</em> API</h1>
   <div class="sub">REST + WebSocket API for space traffic intelligence. Base path <code>/api/v1</code> (alias <code>/api</code>). No key needed for read endpoints; workspace endpoints use <code>X-API-Key</code>.</div>
@@ -38,7 +42,8 @@ curl -X POST {host}/api/v1/workspaces -H "Content-Type: application/json" \
 curl {host}/api/v1/alerts -H "X-API-Key: oiq_…"</pre>
 
   <h2>Catalog &amp; tracking</h2>
-  <div class="ep"><span class="m get">GET</span><span class="path">/satellites</span><div class="d">Full catalog with GP orbital elements. Params: <code>org</code>, <code>q</code> (name/NORAD), <code>limit</code>.</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/satellites</span><div class="d">Catalog objects with GP orbital elements. Params: <code>org</code>, <code>q</code> (name/NORAD), <code>limit</code> (default 500, max 20000).</div></div>
+  <div class="ep"><span class="m get">GET</span><span class="path">/catalog/compact</span><div class="d">The whole catalogue in one compact response: a <code>fields</code> list and one array <code>row</code> per object with the elements SGP4 needs. About 0.9 MB compressed; cacheable; counted against the bulk egress budget for anonymous callers.</div></div>
   <div class="ep"><span class="m get">GET</span><span class="path">/organizations</span><div class="d">Operators detected in the catalog, with object counts.</div></div>
   <div class="ep"><span class="m get">GET</span><span class="path">/stats</span><div class="d">Totals by type and orbital regime.</div></div>
   <div class="ep"><span class="m get">GET</span><span class="path">/recent-objects</span><div class="d">Newest payloads on orbit by international designator.</div></div>

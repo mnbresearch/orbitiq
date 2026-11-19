@@ -111,6 +111,7 @@ earthGroup.add(earth);
 {
   const loader = new THREE.TextureLoader(); loader.crossOrigin = "anonymous";
   const sources = [
+    ["/img/earth-day.jpg", "/img/earth-night.jpg"],
     ["https://unpkg.com/three-globe@2.31.0/example/img/earth-blue-marble.jpg",
      "https://unpkg.com/three-globe@2.31.0/example/img/earth-night.jpg"],
     ["https://cdn.jsdelivr.net/npm/three-globe@2.31.0/example/img/earth-blue-marble.jpg",
@@ -119,10 +120,10 @@ earthGroup.add(earth);
   (function tryLoad(i) {
     if (i >= sources.length) return;
     loader.load(sources[i][0],
-      t => { t.colorSpace = THREE.SRGBColorSpace; earthUniforms.dayMap.value = t; },
+      t => { earthUniforms.dayMap.value = t; },   // stored encoding: the shader writes straight to the sRGB canvas
       undefined, () => tryLoad(i + 1));
     loader.load(sources[i][1],
-      t => { t.colorSpace = THREE.SRGBColorSpace; earthUniforms.nightMap.value = t; },
+      t => { earthUniforms.nightMap.value = t; },
       undefined, () => {});
   })(0);
 }
@@ -467,13 +468,28 @@ $("drawer-star").addEventListener("click", () => {
 let orgNames = {};
 async function loadCatalog() {
   splashSet(24, "Downloading orbital catalog…");
-  const [satsRes, orgsRes, statsRes] = await Promise.all([
-    api("/api/satellites"), api("/api/organizations"), api("/api/stats")
+  // The whole catalogue, compactly encoded. /api/satellites is paged (500 by
+  // default), and reading it here once silently cut the console to 500 objects.
+  const [catRes, orgsRes, statsRes] = await Promise.all([
+    api("/api/v1/catalog/compact"), api("/api/organizations"), api("/api/stats")
   ]);
   splashSet(58, "Building SGP4 propagators…");
   orgNames = Object.fromEntries(orgsRes.organizations.map(o => [o.id, o.name]));
   orgsRes.organizations.forEach((o, i) => ORG_COLORS[o.id] = PALETTE[i % PALETTE.length]);
-  sats = satsRes.satellites.map(s => {
+  const F = Object.fromEntries(catRes.fields.map((k, i) => [k, i]));
+  sats = catRes.rows.map(r => {
+    const s = {
+      id: r[F.id], name: r[F.name], intl: r[F.intl], epoch: r[F.epoch], meanMotion: r[F.meanMotion],
+      ecc: r[F.ecc], incl: r[F.incl], raan: r[F.raan], argp: r[F.argp], ma: r[F.ma], bstar: r[F.bstar],
+      revNum: r[F.revNum], noradType: r[F.type], org: r[F.org]
+    };
+    s.gp = {
+      OBJECT_NAME: s.name, OBJECT_ID: s.intl, EPOCH: s.epoch, MEAN_MOTION: s.meanMotion,
+      ECCENTRICITY: s.ecc, INCLINATION: s.incl, RA_OF_ASC_NODE: s.raan, ARG_OF_PERICENTER: s.argp,
+      MEAN_ANOMALY: s.ma, NORAD_CAT_ID: s.id, BSTAR: s.bstar, MEAN_MOTION_DOT: r[F.mmDot],
+      MEAN_MOTION_DDOT: r[F.mmDdot], EPHEMERIS_TYPE: 0, CLASSIFICATION_TYPE: "U", ELEMENT_SET_NO: 999,
+      REV_AT_EPOCH: s.revNum
+    };
     try { return { ...s, rec: satellite.json2satrec(s.gp), orgName: orgNames[s.org] }; }
     catch { return null; }
   }).filter(s => s && s.rec);
