@@ -121,7 +121,7 @@ export const PLAN_CATALOG = [
     id: "free", name: "Observer", price: "Invitation only", cadence: "",
     pitch: "For researchers, analysts and prospective operators evaluating the platform.",
     features: [
-      "Live catalogue of 16,000+ tracked objects",
+      "Live catalogue of 17,000+ tracked objects, including the major debris clouds",
       "Global conjunction screening feed",
       "Re-entry watch board and space-weather context",
       "200 API calls per day"

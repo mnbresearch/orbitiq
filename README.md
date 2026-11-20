@@ -18,12 +18,15 @@ OrbitIQ turns free public orbital data into screening-grade space traffic intell
 
 ## Subscription tiers
 
-| Plan | Price | Daily calls | Unlocks |
+| Plan (plan id) | Price | Daily calls | Unlocks |
 |---|---|---|---|
-| Observer | free | 200 | live map, launches, basic screening |
-| Tracker | $9/mo | 2,000 | pro passes + Doppler, eclipse, contact planner, ephemeris, full re-entry board |
-| Operator | $99/mo | 20,000 | Pc screening, Fleet Risk, archive queries, trends, constellation analysis, weekly reports + share links, premium exports |
-| Mission | custom | custom | SLAs, custom orgs, integrations |
+| Observer (`free`) | invitation only | 200 | live catalogue, global screening feed, re-entry watch, space weather |
+| Operator (`tracker`) | $2,500 / month | 2,000 | fleet-scoped screening and risk ranking, Pc per encounter, contact planning, pro passes + Doppler, ephemeris export, alerts |
+| Constellation (`operator`) | $9,000 / month | 20,000 | constellation analytics, full archive and trend history, manoeuvre and anomaly detection, reports + share links, premium exports |
+| Underwriter (`verifier`) | bespoke, per portfolio | — | independent verification of Proof of Diligence across operators who grant access |
+| Institutional | bespoke | custom | dedicated instance, private catalogue ingestion, named support |
+
+The plan ids are historical (`tracker` is sold as Operator, `operator` as Constellation); the source of truth for names and prices is `PLAN_CATALOG` in `src/store.js`, which the landing page reads from `/api/plans`.
 
 Plans are enforced server-side (402 gates + per-key metering + anonymous IP rate limiting). Activation: `POST /api/admin/workspaces/{id}/plan`.
 

@@ -866,7 +866,7 @@ async function refreshWorkspaceUI() {
     $("ws-status").textContent = "connected";
     $("ws-title").textContent = d.workspace.name;
     wsPlan = d.workspace.plan || "free"; wsOrg = d.workspace.org || null; wsRole = d.workspace.role || "member";
-    const planLabel = { free: "Observer", tracker: "Tracker", operator: "Operator", pro: "Operator" }[wsPlan] || wsPlan;
+    const planLabel = { free: "Observer", tracker: "Operator", operator: "Constellation", pro: "Constellation" }[wsPlan] || wsPlan;
     const today = new Date().toISOString().slice(0, 10);
     $("ws-sub").innerHTML = `${d.workspace.org ? (orgNames[d.workspace.org] || d.workspace.org) + " · " : ""}key ${d.workspace.apiKeyMasked} · ${(d.usage[today] || 0)} calls today<span class="plan-pill ${wsPlan}">${planLabel}</span>`;
     $("ws-webhook").value = d.workspace.webhook || "";
@@ -1652,11 +1652,11 @@ $("cp-run").addEventListener("click", async () => {
     toast(`${d.summary.totalPasses} contacts scheduled · ${d.summary.contactPct}% coverage`, "ok");
   } catch (e) {
     if (isPlanErr(e)) $("cp-result").innerHTML = `
-      <div class="item MODERATE"><b>Tracker plan feature</b>
-      <div class="sub">Multi-station contact planning across the global network is part of the Tracker tier ($9/mo).</div>
+      <div class="item MODERATE"><b>Operator plan feature</b>
+      <div class="sub">Multi-station contact planning across the global network is part of the Operator plan ($2,500 per month).</div>
       <div style="margin-top:8px"><button class="primary" style="width:auto;padding:6px 16px" id="cp-upgrade">View plans</button></div></div>`;
     else if (/401/.test(e.message) || /API key/i.test(e.message)) $("cp-result").innerHTML = `
-      <div class="item MODERATE"><b>Workspace required</b><div class="sub">Create or connect a workspace (left panel) — the free Observer key works for trying the API; contact planning needs Tracker.</div></div>`;
+      <div class="item MODERATE"><b>Workspace required</b><div class="sub">Create or connect a workspace (left panel) — the free Observer key works for trying the API; contact planning needs the Operator plan.</div></div>`;
     else $("cp-result").innerHTML = `<div class="item CRITICAL"><span class="sub">${e.message}</span></div>`;
     $("cp-upgrade")?.addEventListener("click", openPricing);
   }

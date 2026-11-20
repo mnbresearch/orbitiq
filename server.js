@@ -258,7 +258,7 @@ const requireAdmin = (req, res, next) =>
 const requirePro = (req, res, next) =>
   (req.workspace && (req.workspace.plan === "pro" || req.workspace.role === "admin"))
     ? next()
-    : res.status(402).json({ error: "Pro plan required", detail: "This intelligence endpoint is part of the OrbitIQ Pro subscription. Create a workspace and contact the operator to upgrade." });
+    : res.status(402).json({ error: "Constellation plan required", detail: "This intelligence endpoint is part of the Constellation plan ($9,000 per month). Request access at https://orbit.mnbresearch.com/#request." });
 
 // ---------- caches ----------
 const conjCache = new Map();
@@ -1187,13 +1187,13 @@ api.get("/network/contact-plan", requirePlan("tracker"), async (req, res) => {
   } catch (e) { res.status(500).json({ error: "Contact planning failed", detail: e.message }); }
 });
 
-// ---------- v7: re-entry board (public teaser, Tracker for full) ----------
+// ---------- v7: re-entry board (public teaser, Operator plan for full) ----------
 api.get("/reentry", async (req, res) => {
   try {
     const rank = req.workspace ? (store.PLANS[req.workspace.plan]?.rank ?? 0) : -1;
     const full = !!req.workspace && (rank >= 1 || req.workspace.role === "admin");
     const d = netops.reentryWatch(await getSatellites(), full ? 100 : 12);
-    res.json({ ...d, tier: full ? "full" : "teaser — top 12; Tracker plan unlocks the full board" });
+    res.json({ ...d, tier: full ? "full" : "teaser — top 12; the Operator plan unlocks the full board" });
   } catch (e) { res.status(502).json({ error: "Orbital data source unavailable", detail: e.message }); }
 });
 
