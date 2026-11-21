@@ -1,0 +1,65 @@
+{
+  "generatedAt": "2026-11-21T08:47:49.917Z",
+  "catalogSize": 2683,
+  "screenedPopulation": 2683,
+  "totalMs": 283747,
+  "failed": 0,
+  "screens": [
+    {
+      "org": null,
+      "hours": 3,
+      "thresholdKm": 10,
+      "events": 100,
+      "computeMs": 12112
+    },
+    {
+      "org": null,
+      "hours": 12,
+      "thresholdKm": 25,
+      "events": 100,
+      "computeMs": 33923
+    },
+    {
+      "org": null,
+      "hours": 24,
+      "thresholdKm": 25,
+      "events": 100,
+      "computeMs": 78682
+    },
+    {
+      "org": null,
+      "hours": 24,
+      "thresholdKm": 50,
+      "events": 100,
+      "computeMs": 80231
+    },
+    {
+      "org": "debris",
+      "hours": 12,
+      "thresholdKm": 25,
+      "events": 100,
+      "computeMs": 38868
+    },
+    {
+      "org": "debris",
+      "hours": 3,
+      "thresholdKm": 10,
+      "events": 100,
+      "computeMs": 13444
+    },
+    {
+      "org": "iridium",
+      "hours": 12,
+      "thresholdKm": 25,
+      "events": 100,
+      "computeMs": 6042
+    },
+    {
+      "org": "iridium",
+      "hours": 3,
+      "thresholdKm": 10,
+      "events": 56,
+      "computeMs": 3584
+    }
+  ]
+}
